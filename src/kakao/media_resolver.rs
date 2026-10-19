@@ -108,6 +108,11 @@ pub struct MediaResolveOptions {
     /// [`MediaTier::Planned`] instead, so a preview distinguishes "would fetch"
     /// from "expired" — which switching the CDN tier off cannot do.
     pub dry_run: bool,
+    /// Store a photo whose attachment carries no `cs` from the CDN anyway,
+    /// provided the body is exactly the declared size and is an image.
+    /// Off by default: such bytes are checked for shape, not for identity.
+    /// Videos and files without `cs` are still refused.
+    pub allow_unverified_photos: bool,
 }
 
 impl MediaResolveOptions {
@@ -120,6 +125,7 @@ impl MediaResolveOptions {
             max_fetch_bytes: DEFAULT_MAX_FETCH_BYTES,
             skip_existing: false,
             dry_run: false,
+            allow_unverified_photos: false,
         }
     }
 
@@ -498,6 +504,44 @@ where
                     errors.push(error_record(frame, "cdn", &redact_url(url), err));
                 }
             }
+        } else if let Some(declared) = unverified_photo_size(frame, options) {
+            if options.dry_run {
+                let reason = join_reasons(
+                    why.iter()
+                        .map(String::as_str)
+                        .chain(["cdn-would-fetch-unverified"]),
+                );
+                return Ok((
+                    record(frame, MediaTier::Planned, &reason, None, &[]),
+                    errors,
+                ));
+            }
+            match fetcher(url, options.cdn_timeout, options.max_fetch_bytes).and_then(|body| {
+                check_unverified_photo(&body, declared)?;
+                Ok(body)
+            }) {
+                Ok(body) => {
+                    let out = options.output_dir.join(format!(
+                        "{}{}",
+                        frame.output_stem,
+                        image_ext(&body)
+                    ));
+                    write_image(&body, &out)?;
+                    let reason = join_reasons(
+                        why.iter()
+                            .map(String::as_str)
+                            .chain(["cdn-fetched-unverified"]),
+                    );
+                    return Ok((
+                        record(frame, MediaTier::Cdn, &reason, Some(out), &body),
+                        errors,
+                    ));
+                }
+                Err(err) => {
+                    why.push("cdn-failed".to_string());
+                    errors.push(error_record(frame, "cdn", &redact_url(url), err));
+                }
+            }
         } else {
             // The attachment carries no `cs`, so a fetched body could not be checked against
             // anything. Downloading it anyway would put unverified network bytes on disk under
@@ -627,6 +671,37 @@ fn verify_cdn_checksum(body: &[u8], expected: &str) -> Result<()> {
             actual
         )))
     }
+}
+
+/// Declared size of a `cs`-less photo the caller opted into storing unverified.
+///
+/// `None` keeps the refusal: the option is off, the frame is not a photo, or the
+/// attachment declares no size, which would leave nothing at all to check.
+fn unverified_photo_size(frame: &MediaFrameInput, options: &MediaResolveOptions) -> Option<u64> {
+    if !options.allow_unverified_photos || frame.kind != MediaKind::Photo {
+        return None;
+    }
+    frame
+        .size_bytes
+        .filter(|size| *size > 0)
+        .map(|size| size as u64)
+}
+
+/// The only checks available without `cs`: the body is the declared length and
+/// sniffs as a still image, so a truncated read or an error page is not stored.
+fn check_unverified_photo(body: &[u8], declared: u64) -> Result<()> {
+    if body.len() as u64 != declared {
+        return Err(Error::Kakao(format!(
+            "cdn body is {} bytes, attachment declares {declared}",
+            body.len()
+        )));
+    }
+    if !matches!(image_ext(body), ".jpg" | ".png" | ".gif" | ".webp") {
+        return Err(Error::Kakao(
+            "cdn body is not a jpg, png, gif, or webp image".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn write_image(body: &[u8], out: &Path) -> Result<()> {
@@ -858,6 +933,154 @@ mod tests {
         assert_eq!(report.records[0].tier, MediaTier::Stub);
         assert!(report.records[0].path.is_none());
         assert_eq!(report.errors.len(), 1);
+    }
+
+    fn unverified_photo_options() -> (tempfile::TempDir, MediaDirs, MediaResolveOptions) {
+        let (tmp, dirs, mut options) = fixture();
+        options.allow_unverified_photos = true;
+        (tmp, dirs, options)
+    }
+
+    fn unverified_photo_frame(size: Option<i64>) -> MediaFrameInput {
+        let mut input = frame();
+        input.checksum_sha1 = None;
+        input.size_bytes = size;
+        input.cdn_url = Some("https://cdn.example/image?expires=1900000000".to_string());
+        input
+    }
+
+    #[test]
+    fn opted_in_photo_without_cs_is_stored_when_size_and_format_match() {
+        let (_, dirs, options) = unverified_photo_options();
+        let body = bytes_from_hex(VECTOR_IMAGE_HEX);
+        let input = unverified_photo_frame(Some(body.len() as i64));
+
+        let report =
+            resolve_media_frames_with_fetcher(CHAT_ID, &[input], &dirs, &options, |_, _, _| {
+                Ok(body.clone())
+            })
+            .expect("resolve");
+
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let record = &report.records[0];
+        assert_eq!(record.tier, MediaTier::Cdn);
+        assert_eq!(record.tier_reason, "full-not-cached+cdn-fetched-unverified");
+        let path = record.path.as_ref().expect("path");
+        assert_eq!(std::fs::read(path).expect("image"), body);
+        assert_eq!(
+            path.extension().and_then(|ext| ext.to_str()),
+            Some(&image_ext(&body)[1..])
+        );
+    }
+
+    #[test]
+    fn opted_in_photo_without_cs_rejects_size_mismatch_then_uses_thumbnail() {
+        let (tmp, dirs, options) = unverified_photo_options();
+        let body = bytes_from_hex(VECTOR_IMAGE_HEX);
+        let input = unverified_photo_frame(Some(body.len() as i64 + 1));
+        write_cached_media(
+            tmp.path(),
+            &input.thumb_stem,
+            ".thm",
+            &bytes_from_hex(PYTHON_REFERENCE_PKV2_HEX),
+        );
+
+        let report =
+            resolve_media_frames_with_fetcher(CHAT_ID, &[input], &dirs, &options, |_, _, _| {
+                Ok(body.clone())
+            })
+            .expect("resolve");
+
+        assert_eq!(report.records[0].tier, MediaTier::Thumb);
+        assert_eq!(report.records[0].tier_reason, "full-not-cached+cdn-failed");
+        assert_eq!(report.errors.len(), 1);
+        assert!(report.errors[0].error.contains("attachment declares"));
+    }
+
+    #[test]
+    fn opted_in_photo_without_cs_rejects_a_non_image_body() {
+        let (_, dirs, options) = unverified_photo_options();
+        let body = b"<html>denied</html>".to_vec();
+        let input = unverified_photo_frame(Some(body.len() as i64));
+
+        let report =
+            resolve_media_frames_with_fetcher(CHAT_ID, &[input], &dirs, &options, |_, _, _| {
+                Ok(body.clone())
+            })
+            .expect("resolve");
+
+        let record = &report.records[0];
+        assert_eq!(record.tier, MediaTier::Stub);
+        assert!(record.path.is_none());
+        assert!(record.tier_reason.contains("cdn-failed"));
+        assert!(report.errors[0]
+            .error
+            .contains("not a jpg, png, gif, or webp"));
+    }
+
+    #[test]
+    fn photo_without_cs_is_refused_by_default_even_with_a_declared_size() {
+        let (_, dirs, options) = fixture();
+        let input = unverified_photo_frame(Some(16));
+
+        let report =
+            resolve_media_frames_with_fetcher(CHAT_ID, &[input], &dirs, &options, |_, _, _| {
+                panic!("storing unverified photos is opt-in")
+            })
+            .expect("resolve");
+
+        assert!(report.records[0].tier_reason.contains("cdn-unverifiable"));
+        assert!(report.records[0].path.is_none());
+    }
+
+    #[test]
+    fn opted_in_photo_without_cs_or_size_is_still_refused() {
+        let (_, dirs, options) = unverified_photo_options();
+        let input = unverified_photo_frame(None);
+
+        let report =
+            resolve_media_frames_with_fetcher(CHAT_ID, &[input], &dirs, &options, |_, _, _| {
+                panic!("nothing would be left to check, so nothing may be fetched")
+            })
+            .expect("resolve");
+
+        assert_eq!(report.records[0].tier, MediaTier::Stub);
+        assert!(report.records[0].tier_reason.contains("cdn-unverifiable"));
+    }
+
+    #[test]
+    fn opted_in_video_without_cs_is_still_refused() {
+        let (_, dirs, options) = unverified_photo_options();
+        let mut input = unverified_photo_frame(Some(16));
+        input.kind = MediaKind::Video;
+
+        let report =
+            resolve_media_frames_with_fetcher(CHAT_ID, &[input], &dirs, &options, |_, _, _| {
+                panic!("the option covers photos only")
+            })
+            .expect("resolve");
+
+        assert!(report.records[0].tier_reason.contains("cdn-unverifiable"));
+        assert!(report.records[0].path.is_none());
+    }
+
+    #[test]
+    fn opted_in_dry_run_plans_an_unverified_photo_without_fetching() {
+        let (_, dirs, mut options) = unverified_photo_options();
+        options.dry_run = true;
+        let input = unverified_photo_frame(Some(16));
+
+        let report =
+            resolve_media_frames_with_fetcher(CHAT_ID, &[input], &dirs, &options, |_, _, _| {
+                panic!("a dry run performs no request")
+            })
+            .expect("resolve");
+
+        assert_eq!(report.records[0].tier, MediaTier::Planned);
+        assert_eq!(
+            report.records[0].tier_reason,
+            "full-not-cached+cdn-would-fetch-unverified"
+        );
     }
 
     #[test]

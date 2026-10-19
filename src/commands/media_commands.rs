@@ -19,19 +19,41 @@ pub(crate) fn run(command: MediaCommand, data_dir: &Path) -> Result<()> {
             log,
             out,
             no_cdn,
+            allow_unverified_photos,
             kinds,
             limit,
             json,
-        } => run_get(chat, log, out, no_cdn, kinds, limit, json, data_dir),
+        } => run_get(
+            chat,
+            log,
+            out,
+            no_cdn,
+            allow_unverified_photos,
+            kinds,
+            limit,
+            json,
+            data_dir,
+        ),
         MediaCommand::Backfill {
             chat,
             out,
             kinds,
             dry_run,
+            allow_unverified_photos,
             max_bytes,
             limit,
             json,
-        } => run_backfill(chat, out, kinds, dry_run, max_bytes, limit, json, data_dir),
+        } => run_backfill(
+            chat,
+            out,
+            kinds,
+            dry_run,
+            allow_unverified_photos,
+            max_bytes,
+            limit,
+            json,
+            data_dir,
+        ),
     }
 }
 
@@ -60,6 +82,7 @@ fn run_get(
     log_id: Option<i64>,
     out: Option<PathBuf>,
     no_cdn: bool,
+    allow_unverified_photos: bool,
     kinds: Vec<String>,
     limit: usize,
     json: bool,
@@ -89,6 +112,7 @@ fn run_get(
         let media_dirs = MediaDirs::discover(&home).context("scan KakaoTalk media cache dirs")?;
         let options = MediaResolveOptions {
             cdn_enabled: !no_cdn,
+            allow_unverified_photos,
             ..MediaResolveOptions::new(output_dir.clone())
         };
         lazykatok::kakao::media_resolver::resolve_media_frames(
@@ -106,6 +130,7 @@ fn run_get(
         "kinds": kind_names(&kinds),
         "output_dir": output_dir,
         "cdn_enabled": !no_cdn,
+        "allow_unverified_photos": allow_unverified_photos,
         "frame_count": frames.len(),
         "records": report.records,
         "errors": report.errors,
@@ -120,6 +145,7 @@ fn run_backfill(
     out: Option<PathBuf>,
     kinds: Vec<String>,
     dry_run: bool,
+    allow_unverified_photos: bool,
     max_bytes: u64,
     limit: usize,
     json: bool,
@@ -162,6 +188,7 @@ fn run_backfill(
             max_fetch_bytes: max_bytes,
             skip_existing: true,
             dry_run,
+            allow_unverified_photos,
             ..MediaResolveOptions::new(output_dir.clone())
         };
         if !dry_run {
@@ -200,6 +227,7 @@ fn run_backfill(
         "kinds": kind_names(&kinds),
         "output_root": root,
         "max_bytes": max_bytes,
+        "allow_unverified_photos": allow_unverified_photos,
         "room_count": rooms.len(),
         "rooms": rooms,
         "tier_totals": totals,

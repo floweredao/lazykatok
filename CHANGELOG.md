@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Media
+
+- Added `--allow-unverified-photos` to `media get` and `media backfill`. A
+  photo whose attachment carries no `cs` fingerprint is then stored from the
+  CDN when the body matches the declared size and is a JPEG, PNG, GIF, or WebP
+  image, recorded as `cdn-fetched-unverified`. Without the flag such photos are
+  still refused as `cdn-unverifiable`, and videos and files without `cs` are
+  refused either way.
+
 ### Source
 
 - Discover KakaoTalk databases in both store roots — the app-sandbox container
