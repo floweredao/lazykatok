@@ -164,6 +164,14 @@ short-circuits without a network call (`cdn-expired`), and a failed fetch or a
 fingerprint mismatch records a `stage: "cdn"` error before falling through to thumbnail
 and stub.
 
+`--allow-unverified-photos` (on `media get` and `media backfill`) is the opt-in
+exception for photos only. A `cs`-less photo frame that declares a size `s` is fetched,
+and the body is kept only if its length equals `s` and it sniffs as JPEG, PNG, GIF, or
+WebP; the record lands in the `cdn` tier with `cdn-fetched-unverified` in `tier_reason`,
+so a consumer can still tell it from a fingerprint-checked body. A length or format
+mismatch is a `cdn-failed` error that falls through to thumbnail and stub. A photo with
+no `s`, and every video or file without `cs`, stays `cdn-unverifiable`.
+
 ## WAL read consistency
 
 The KakaoTalk database runs in WAL journal mode and the app holds it open while running,

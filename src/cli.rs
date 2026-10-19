@@ -346,6 +346,10 @@ pub(crate) enum MediaCommand {
         /// File attachments have no local tier, so they resolve to nothing here.
         #[arg(long)]
         no_cdn: bool,
+        /// Also store a photo whose attachment has no `cs` fingerprint from the
+        /// CDN, checking only that it is the declared size and an image.
+        #[arg(long)]
+        allow_unverified_photos: bool,
         /// Media kinds to extract; repeatable. Defaults to every kind.
         #[arg(long = "kind", value_name = "KIND")]
         kinds: Vec<String>,
@@ -378,6 +382,10 @@ pub(crate) enum MediaCommand {
         /// Report what would be fetched without downloading anything.
         #[arg(long)]
         dry_run: bool,
+        /// Also store a photo whose attachment has no `cs` fingerprint from the
+        /// CDN, checking only that it is the declared size and an image.
+        #[arg(long)]
+        allow_unverified_photos: bool,
         /// Refuse to download an attachment larger than this many bytes.
         #[arg(long, default_value_t = 512 * 1024 * 1024)]
         max_bytes: u64,

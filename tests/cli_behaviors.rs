@@ -103,6 +103,7 @@ fn cli_media_get_help_documents_image_extraction_flags() {
         .stdout(predicate::str::contains("--log"))
         .stdout(predicate::str::contains("--out"))
         .stdout(predicate::str::contains("--no-cdn"))
+        .stdout(predicate::str::contains("--allow-unverified-photos"))
         .stdout(predicate::str::contains("--json"));
 }
 
