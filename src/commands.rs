@@ -19,6 +19,7 @@ use lazykatok::{
         rebuild_chunks_for_chats, rebuild_chunks_with_settings, ChunkSettings, CHUNKER_VERSION,
     },
     config::KatokConfig,
+    hybrid::hybrid_search_with_config,
     search::{bm25_search_with_snippet, keyword_search_with_snippet},
     semantic::semantic_search_live_with_config,
     transcript::export_transcript,
@@ -557,7 +558,8 @@ pub(crate) fn command_requests_json(command: &Commands) -> bool {
         Commands::Search { command } => match command {
             SearchCommand::Keyword { json, .. }
             | SearchCommand::Bm25 { json, .. }
-            | SearchCommand::Semantic { json, .. } => *json,
+            | SearchCommand::Semantic { json, .. }
+            | SearchCommand::Hybrid { json, .. } => *json,
         },
         Commands::Chunk { command } => match command {
             crate::cli::ChunkCommand::Get { json, .. }
@@ -1919,6 +1921,16 @@ fn run_doctor(
     semantic_dir: PathBuf,
 ) -> Result<()> {
     let macos_probe = macos_probe_payload(macos_probe_enabled, &data_dir);
+    // `provider` names the backend the indexer will pick; the deterministic test
+    // embedders still resolve locally, so only the HTTP backend reports differently.
+    let embedder_provider = match config.embedder_family() {
+        "openai-compatible" => "openai-compatible",
+        _ => "local",
+    };
+    let embedder_mode = config.embedder_provider.clone();
+    let embedder_endpoint = config.embedder_url.clone();
+    let embedder_model = config.embedder_model.clone();
+    let embedder_dimension = config.vector_dimension;
     let payload = serde_json::json!({
         "name": "lazykatok",
         "command": "lazykatok",
@@ -1938,11 +1950,11 @@ fn run_doctor(
             "status": if archive_path.exists() { "present" } else { "missing" }
         },
         "embedder": {
-            "model": config.embedder_model,
-            "dimension": config.vector_dimension,
-            "provider": "local",
-            "mode": std::env::var("KATOK_EMBEDDER").unwrap_or_else(|_| "local".to_string()),
-            "endpoint": null
+            "model": embedder_model,
+            "dimension": embedder_dimension,
+            "provider": embedder_provider,
+            "mode": embedder_mode,
+            "endpoint": embedder_endpoint
         }
     });
     print_payload(json, &payload)
@@ -2854,6 +2866,22 @@ fn run_search(
                     config,
                 ))
                 .context("semantic search")?;
+            print_payload(json, &hits)
+        }
+        SearchCommand::Hybrid { query, limit, json } => {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("create semantic runtime")?;
+            let hits = runtime
+                .block_on(hybrid_search_with_config(
+                    &archive,
+                    semantic_dir,
+                    &query,
+                    limit,
+                    config,
+                ))
+                .context("hybrid search")?;
             print_payload(json, &hits)
         }
     }
