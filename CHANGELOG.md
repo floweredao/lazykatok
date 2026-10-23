@@ -10,6 +10,12 @@
   the old prefix until `--full`. With a prefix set, the id becomes
   `openai/<model>+passage-prefix-<hash>`; without one it is unchanged, so
   existing indexes keep their vectors.
+- An `index` run that fails or is interrupted while embedding no longer throws
+  away the vectors it already stored. The next `index` (without `--full`)
+  reuses them, so a remote embedder that errors near the end of a large
+  archive costs only the texts not yet embedded. The failed run's copy of the
+  chat text is removed straight away; its vectors are removed once a
+  generation is committed.
 
 ### Media
 
