@@ -12,6 +12,11 @@
   skipped and counted with the unreadable rows instead of being archived as sent
   on 1970-01-01. That date widened the range `sync --prune-deleted` trusts for
   the chat back to 1970, so it deleted archived messages KakaoTalk had pruned.
+- When the store exists as `<name>` in one root and `<name>.db` in the other,
+  only the more recently modified copy is read, as already happens for two copies
+  under the same name. Both used to be read, and the copy in
+  `~/Library/Application Support` won every message they shared. When that copy
+  was the stale one, messages edited since the move showed their old text.
 
 ### Media
 
