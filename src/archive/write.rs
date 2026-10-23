@@ -693,6 +693,22 @@ impl Archive {
                     )
                     .map_err(Error::Sql)?;
             }
+            // The scoped ref rebuild reaches a chat's edges through the messages that still
+            // exist, so it cannot see the edge of a reply that was just removed. Drop every edge
+            // whose child is no longer a stored reply, which is the set a full rebuild would
+            // never have written. The subquery is served by the partial `idx_messages_reply_to`.
+            if !doomed.is_empty() {
+                self.conn
+                    .execute(
+                        "DELETE FROM reply_edges
+                         WHERE child_message_id NOT IN (
+                            SELECT message_id FROM messages
+                            WHERE reply_to_message_id IS NOT NULL
+                         )",
+                        [],
+                    )
+                    .map_err(Error::Sql)?;
+            }
         }
         Ok(doomed)
     }

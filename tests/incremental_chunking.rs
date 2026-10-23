@@ -2360,3 +2360,62 @@ fn syncing_only_an_edit_to_an_old_message_keeps_the_cursor_at_the_newest_message
     assert_eq!(report.updated_messages, 1);
     assert_eq!(cursor(), newest);
 }
+
+/// Pruning a reply must take its `reply_edges` row with it.
+///
+/// The scoped ref rebuild finds a chat's edges through the messages that still
+/// exist, so an edge whose child was just deleted is invisible to it: the row
+/// survived, still naming the removed message and the chunk it used to sit in.
+#[test]
+fn pruning_a_reply_drops_its_reply_edge_and_matches_a_full_rebuild() {
+    let at = chrono::Utc::now();
+    let seeded = vec![
+        raw("chat-r", "r0", "Alice", at, "질문 하나", None),
+        raw(
+            "chat-r",
+            "r1",
+            "Bob",
+            at + chrono::Duration::seconds(10),
+            "지워질 답장",
+            Some("r0"),
+        ),
+        raw(
+            "chat-r",
+            "r2",
+            "Alice",
+            at + chrono::Duration::seconds(20),
+            "남는 문장",
+            None,
+        ),
+    ];
+    let source: Vec<RawMessage> = seeded
+        .iter()
+        .filter(|m| m.message_id != "r1")
+        .cloned()
+        .collect();
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("archive.sqlite3");
+    let archive = Archive::open(&path).expect("open archive");
+    archive.sync_messages(&seeded).expect("seed");
+    rebuild_chunks(&archive).expect("seed chunks");
+
+    let removed = archive.reconcile_deletions(&source, true).expect("apply");
+    assert_eq!(removed.len(), 1);
+    rebuild_chunks_for_chats(&archive, settings(), &[whole_chat("chat-r")])
+        .expect("scoped rebuild");
+
+    let full_dir = tempfile::tempdir().expect("tempdir");
+    let full_path = full_dir.path().join("archive.sqlite3");
+    let full = Archive::open(&full_path).expect("open archive");
+    full.sync_messages(&source).expect("sync survivors");
+    rebuild_chunks(&full).expect("full rebuild");
+
+    let conn = Connection::open(&path).expect("open sqlite");
+    assert_eq!(
+        snapshot(&conn),
+        snapshot(&Connection::open(&full_path).expect("open sqlite")),
+        "pruning then rebuilding the chat must leave what a fresh build of the survivors does"
+    );
+    assert_archive_invariants(&conn, 2);
+}
