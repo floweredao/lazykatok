@@ -14,12 +14,18 @@ pub fn keyword_search_with_snippet(
     if query.trim().is_empty() {
         return Err(Error::EmptyQuery);
     }
-    let pattern = format!("%{}%", query.trim());
+    // `%` and `_` are LIKE wildcards; escape them so the query matches as typed.
+    let escaped = query
+        .trim()
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    let pattern = format!("%{escaped}%");
     let mut stmt = archive
         .connection()
         .prepare(
             "SELECT chunk_id FROM chunks
-         WHERE text LIKE ?1
+         WHERE text LIKE ?1 ESCAPE '\\'
          ORDER BY started_at, chunk_id
          LIMIT ?2",
         )
