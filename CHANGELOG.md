@@ -15,6 +15,13 @@
   was checked, so an endpoint exported in the environment overrode an offline
   provider chosen in the config file and sent archive text to that endpoint.
 
+### Search
+
+- `search hybrid` gives every window a BM25 chunk spans that chunk's rank. A
+  chunk cut across a window boundary used to rank its second window one place
+  lower and push every later BM25 window down by one, so semantic hits beat
+  windows they should have tied or lost to.
+
 ### Media
 
 - Added `--allow-unverified-photos` to `media get` and `media backfill`. A
