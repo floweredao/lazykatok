@@ -1,4 +1,4 @@
-//! Where one chunk ends and the next begins.
+//! Where one chunk ends and the next begins, and the order chunks are read back in.
 
 use chrono::{DateTime, TimeZone, Utc};
 use lazykatok::{archive::Archive, chunking::rebuild_chunks, types::RawMessage};
@@ -74,5 +74,54 @@ fn different_senders_sharing_a_nickname_get_separate_chunks() {
             ],
             "nickname {nickname:?}"
         );
+    }
+}
+
+/// KakaoTalk stamps messages to the second, so in a busy room several authors' chunks start in
+/// the same second. Those ties were broken by `chunk_id`, a content hash, which shuffled them:
+/// `chunks` listed them out of order and `chunk context` skipped a neighbour on one side and
+/// repeated it on the other.
+#[test]
+fn chunks_starting_in_the_same_second_keep_reading_order() {
+    let senders = ["a", "b", "c", "d", "e", "f"];
+    let messages: Vec<RawMessage> = senders
+        .iter()
+        .enumerate()
+        .map(|(index, sender)| {
+            message(
+                &format!("m{index}"),
+                &format!("sender-{sender}"),
+                &format!("합성{sender}"),
+                0,
+                "같은 초에 보낸 말",
+            )
+        })
+        .collect();
+    let (_dir, archive) = archive_with(&messages);
+
+    let expected: Vec<Vec<String>> = (0..senders.len())
+        .map(|index| vec![format!("m{index}")])
+        .collect();
+    assert_eq!(chunk_messages(&archive), expected, "chunks --chat order");
+
+    let ids: Vec<String> = archive
+        .chunks_for_chat("chat-synthetic")
+        .expect("chunks")
+        .into_iter()
+        .map(|summary| summary.chunk_id)
+        .collect();
+    for (index, chunk_id) in ids.iter().enumerate() {
+        let context = archive
+            .chunk_context(chunk_id)
+            .expect("chunk context")
+            .expect("chunk exists");
+        let previous = context.previous.map(|chunk| chunk.chunk_id);
+        let next = context.next.map(|chunk| chunk.chunk_id);
+        assert_eq!(
+            previous,
+            index.checked_sub(1).map(|before| ids[before].clone()),
+            "previous of chunk {index}"
+        );
+        assert_eq!(next, ids.get(index + 1).cloned(), "next of chunk {index}");
     }
 }
