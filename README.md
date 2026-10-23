@@ -84,6 +84,8 @@ URL은 `/embeddings`로 끝나면 그대로, `/v1`로 끝나면 `/embeddings`를
 `/v1/embeddings`를 붙여 호출합니다. 같은 설정을 `--config katok.toml`의
 `embedder_url`(별칭 `embedder_endpoint`) · `embedder_model` · `vector_dimension` ·
 `embedder_api_key_env` · `query_prefix` · `passage_prefix`로도 지정할 수 있습니다.
+`passage_prefix`를 지정하면 ID에 접두사의 해시가 붙어(`openai/<model>+passage-prefix-<hash>`),
+접두사를 바꾼 뒤의 `index`는 이전 벡터를 재사용하지 않고 다시 임베딩합니다.
 로컬 모델 캐시는 `KATOK_FASTEMBED_CACHE_DIR`, 없으면 플랫폼 캐시 디렉터리의
 `lazykatok/fastembed`를 사용합니다.
 
