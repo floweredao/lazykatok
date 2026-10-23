@@ -49,7 +49,8 @@ pub(crate) enum Commands {
         touched: bool,
     },
     Index {
-        /// Rebuild every vector instead of reusing unchanged vectors from the committed generation.
+        /// Rebuild every vector instead of reusing unchanged vectors from the committed generation
+        /// or from an earlier run that failed or was interrupted.
         #[arg(long)]
         full: bool,
         #[arg(long)]
