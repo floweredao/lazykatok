@@ -29,7 +29,7 @@ pub const TAIL_REBUILD_START_QUERY: &str = "SELECT started_at, ended_at FROM chu
 /// touches only the tail and never sorts or scans the whole archive.
 pub const RAW_MESSAGES_FOR_CHAT_SINCE_QUERY: &str =
     "SELECT account_hash, chat_id, chat_name, chat_type, message_id,
-            sender_nickname, timestamp, text, message_type
+            sender_nickname, timestamp, text, message_type, sender_id
      FROM messages
      WHERE chat_id = ?1 AND timestamp >= COALESCE(?2, '')
      ORDER BY timestamp, message_id";
@@ -176,7 +176,7 @@ impl Archive {
             .conn
             .prepare(
                 "SELECT account_hash, chat_id, chat_name, chat_type, message_id,
-                    sender_nickname, timestamp, text, message_type
+                    sender_nickname, timestamp, text, message_type, sender_id
              FROM messages ORDER BY chat_id, timestamp, message_id",
             )
             .map_err(Error::Sql)?;
@@ -203,7 +203,7 @@ impl Archive {
             .conn
             .prepare(&format!(
                 "SELECT account_hash, chat_id, chat_name, chat_type, message_id,
-                    sender_nickname, timestamp, text, message_type
+                    sender_nickname, timestamp, text, message_type, sender_id
              FROM messages WHERE chat_id IN ({placeholders})
              ORDER BY chat_id, timestamp, message_id"
             ))
@@ -300,7 +300,7 @@ impl Archive {
             .conn
             .prepare(
                 "SELECT account_hash, chat_id, chat_name, chat_type, message_id,
-                    sender_nickname, timestamp, text, message_type
+                    sender_nickname, timestamp, text, message_type, sender_id
              FROM messages
              WHERE chat_id = ?1 AND (?2 IS NULL OR timestamp >= ?2)
              ORDER BY timestamp, message_id",

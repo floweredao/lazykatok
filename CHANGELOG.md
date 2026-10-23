@@ -24,6 +24,13 @@
 - The store key and database name are derived once per account instead of
   three times per read; each derivation is 100k PBKDF2 rounds.
 
+### Chunking
+
+- A chunk now ends where the sender changes even when the next sender shows
+  the same nickname, or no nickname at all. Two members sharing a display name
+  used to land in one chunk filed under whichever spoke first. The chunker
+  version is bumped, so the next sync rebuilds every room once.
+
 ## 0.3.3
 
 ### Semantic search
