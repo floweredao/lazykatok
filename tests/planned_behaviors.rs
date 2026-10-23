@@ -171,3 +171,48 @@ fn semantic_document_rebuild_prunes_stale_parent_markdown_when_indexed() {
     let stale = semantic_search(&archive, &semantic_dir, "stale", 10).expect("semantic search");
     assert!(stale.is_empty());
 }
+
+#[test]
+fn keyword_search_treats_percent_and_underscore_as_literal_text() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let archive = Archive::open(&dir.path().join("archive.sqlite3")).expect("open archive");
+    let message = |id: &str, hour: u32, text: &str| RawMessage {
+        account_hash: "acct".to_string(),
+        chat_id: "chat-literal".to_string(),
+        chat_name: "Literal Fixture".to_string(),
+        chat_type: "group".to_string(),
+        message_id: id.to_string(),
+        sender_id: "sender-1".to_string(),
+        sender_nickname: "합성A".to_string(),
+        timestamp: chrono::DateTime::parse_from_rfc3339(&format!("2026-01-01T{hour:02}:00:00Z"))
+            .expect("timestamp")
+            .with_timezone(&chrono::Utc),
+        text: text.to_string(),
+        message_type: "text".to_string(),
+        reply_to_message_id: None,
+    };
+    // Hours apart, so each message is its own chunk.
+    archive
+        .sync_messages(&[
+            message("lit-1", 9, "할인 50% 적용"),
+            message("lit-2", 12, "할인 500원 적용"),
+            message("lit-3", 15, "파일 report_v2 공유"),
+            message("lit-4", 18, "파일 reportXv2 공유"),
+            message("lit-5", 21, r"경로 C:\temp 확인"),
+        ])
+        .expect("sync messages");
+    rebuild_chunks(&archive).expect("rebuild chunks");
+    assert_eq!(archive.all_chunks().expect("chunks").len(), 5);
+
+    let percent = keyword_search(&archive, "50%", 10).expect("keyword search");
+    assert_eq!(percent.len(), 1, "`%` must not act as a wildcard");
+    assert!(percent[0].snippet.contains("50%"));
+
+    let underscore = keyword_search(&archive, "report_v2", 10).expect("keyword search");
+    assert_eq!(underscore.len(), 1, "`_` must not act as a wildcard");
+    assert!(underscore[0].snippet.contains("report_v2"));
+
+    // The escape character itself must still match literally.
+    let backslash = keyword_search(&archive, r"C:\temp", 10).expect("keyword search");
+    assert_eq!(backslash.len(), 1);
+}
