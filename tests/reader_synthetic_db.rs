@@ -629,3 +629,54 @@ fn unreadable_reply_metadata_keeps_the_message() {
         Some("100-10")
     );
 }
+
+/// A row with no usable `sentAt` (NULL, the column's 0 default, or a value
+/// that is not a number) has no send time, and must not be archived as sent at
+/// the Unix epoch. Beyond misdating it, an epoch row stretches the span
+/// `reconcile_deletions` trusts for its chat back to 1970, so `--prune-deleted`
+/// would delete every archived message KakaoTalk itself has since pruned —
+/// the history the archive exists to keep.
+#[test]
+fn a_row_without_a_send_time_is_skipped_not_dated_to_the_epoch() {
+    use lazykatok::archive::Archive;
+    use lazykatok::types::RawMessage;
+
+    let output = read_messages_inserted_by(
+        "INSERT INTO NTChatMessage(chatId, logId, msgId, authorId, type, message, sentAt)
+         VALUES (100, 10, 1, 500, 1, 'synthetic first', 1700000000),
+                (100, 11, 2, 500, 1, 'synthetic null time', NULL),
+                (100, 12, 3, 500, 1, 'synthetic zero time', 0),
+                (100, 13, 4, 500, 1, 'synthetic text time', 'soon'),
+                (100, 14, 5, 500, 1, 'synthetic last', 1700000200);",
+    );
+    let ids: Vec<&str> = output
+        .messages
+        .iter()
+        .map(|message| message.message_id.as_str())
+        .collect();
+    assert_eq!(ids, vec!["100-10", "100-14"]);
+
+    // An earlier sync archived a message the store has since pruned.
+    let archived = RawMessage {
+        message_id: "100-5".to_string(),
+        timestamp: chrono::DateTime::from_timestamp(1_600_000_000, 0).expect("valid time"),
+        text: "synthetic archived history".to_string(),
+        ..output.messages[0].clone()
+    };
+    let dir = tempfile::tempdir().expect("archive dir");
+    let archive = Archive::open(&dir.path().join("archive.sqlite3")).expect("open archive");
+    archive
+        .sync_messages(std::slice::from_ref(&archived))
+        .expect("archive history");
+    archive
+        .sync_messages(&output.messages)
+        .expect("sync store read");
+
+    let doomed = archive
+        .reconcile_deletions(&output.messages, false)
+        .expect("reconcile");
+    assert!(
+        doomed.is_empty(),
+        "history older than the store's reach must be kept: {doomed:?}"
+    );
+}
