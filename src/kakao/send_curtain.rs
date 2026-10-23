@@ -310,37 +310,11 @@ fn install_input_tap(
             if is_synthetic(event) {
                 return CallbackResult::Keep;
             }
-            let armed = cancel_rect.lock().map(|rect| rect.w > 0.0).unwrap_or(false);
-            if !armed {
-                // Curtain is down: this is an ordinary moment in the user's day.
-                return CallbackResult::Keep;
+            if swallow_user_event(&control, &cancel_rect, event_type, event) {
+                CallbackResult::Drop
+            } else {
+                CallbackResult::Keep
             }
-            // Cancellation needs the curtain to be on screen. Armed runs ahead
-            // of drawn by design, and in that window an Escape belongs to
-            // whatever the user was already doing — treating it as "stop the
-            // send" cancelled runs that had not visibly started.
-            let showing = control.visible.load(Ordering::SeqCst);
-            match event_type {
-                CGEventType::KeyDown => {
-                    if showing
-                        && event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE)
-                            == ESC_KEYCODE
-                    {
-                        control.cancel.cancel();
-                    }
-                }
-                CGEventType::LeftMouseDown => {
-                    let inside = cancel_rect
-                        .lock()
-                        .map(|rect| rect.contains(event.location()))
-                        .unwrap_or(false);
-                    if showing && inside {
-                        control.cancel.cancel();
-                    }
-                }
-                _ => {}
-            }
-            CallbackResult::Drop
         },
     )
     .ok()?;
@@ -354,6 +328,50 @@ fn install_input_tap(
         source,
         run_loop,
     })
+}
+
+/// What the tap does with one real (untagged) input event: `true` swallows it.
+///
+/// Raises the cancel flag when the event is the user asking to stop.
+fn swallow_user_event(
+    control: &CurtainControl,
+    cancel_rect: &Mutex<CancelRect>,
+    event_type: CGEventType,
+    event: &CGEvent,
+) -> bool {
+    // Read `armed`, not the cancel button's rect. The rect is only filled in
+    // once the main thread has drawn the curtain and only cleared once it has
+    // taken it down, so inferring arming from it left input live after `show`
+    // and kept swallowing it after `hide`.
+    if !control.armed.load(Ordering::SeqCst) {
+        // Curtain is down: this is an ordinary moment in the user's day.
+        return false;
+    }
+    // Cancellation needs the curtain to be on screen. Armed runs ahead
+    // of drawn by design, and in that window an Escape belongs to
+    // whatever the user was already doing — treating it as "stop the
+    // send" cancelled runs that had not visibly started.
+    let showing = control.visible.load(Ordering::SeqCst);
+    match event_type {
+        CGEventType::KeyDown => {
+            if showing
+                && event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) == ESC_KEYCODE
+            {
+                control.cancel.cancel();
+            }
+        }
+        CGEventType::LeftMouseDown => {
+            let inside = cancel_rect
+                .lock()
+                .map(|rect| rect.contains(event.location()))
+                .unwrap_or(false);
+            if showing && inside {
+                control.cancel.cancel();
+            }
+        }
+        _ => {}
+    }
+    true
 }
 
 /// Removes the tap from the run loop on drop, so input comes back even on an
@@ -677,6 +695,145 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(handle.join().is_err(), "the panic must reach the caller");
+    }
+
+    fn idle_control() -> CurtainControl {
+        CurtainControl {
+            shown: AtomicBool::new(false),
+            armed: AtomicBool::new(false),
+            visible: AtomicBool::new(false),
+            subtitle: Mutex::new(String::new()),
+            revision: AtomicUsize::new(0),
+            cancel: CancelFlag::new(),
+        }
+    }
+
+    fn user_click(at: CGPoint) -> CGEvent {
+        use core_graphics::event::CGMouseButton;
+        use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+
+        let source = CGEventSource::new(CGEventSourceStateID::Private).expect("event source");
+        CGEvent::new_mouse_event(source, CGEventType::LeftMouseDown, at, CGMouseButton::Left)
+            .expect("event")
+    }
+
+    fn user_key(keycode: u16) -> CGEvent {
+        use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+
+        let source = CGEventSource::new(CGEventSourceStateID::Private).expect("event source");
+        CGEvent::new_keyboard_event(source, keycode, true).expect("event")
+    }
+
+    const SYNTHETIC_CANCEL_RECT: CancelRect = CancelRect {
+        x: 100.0,
+        y: 100.0,
+        w: 132.0,
+        h: 34.0,
+    };
+
+    /// Input stops the moment the worker asks for the curtain, before the
+    /// main thread has drawn it and filled in the cancel button's rect.
+    #[test]
+    fn input_is_blocked_from_show_not_from_the_drawn_curtain() {
+        let control = idle_control();
+        let rect = Mutex::new(CancelRect::default());
+        let elsewhere = CGPoint::new(10.0, 10.0);
+
+        assert!(!swallow_user_event(
+            &control,
+            &rect,
+            CGEventType::LeftMouseDown,
+            &user_click(elsewhere)
+        ));
+
+        // No pump runs here, so this returns with the curtain still undrawn.
+        control.show("synthetic subtitle");
+
+        assert!(swallow_user_event(
+            &control,
+            &rect,
+            CGEventType::LeftMouseDown,
+            &user_click(elsewhere)
+        ));
+        // Swallowed, but not yet a cancel: nothing is on screen to cancel.
+        assert!(swallow_user_event(
+            &control,
+            &rect,
+            CGEventType::KeyDown,
+            &user_key(ESC_KEYCODE as u16)
+        ));
+        assert!(!control.is_cancelled());
+    }
+
+    /// Input comes back the moment the worker lowers the curtain, not on the
+    /// main thread's next tick.
+    #[test]
+    fn input_is_handed_back_as_soon_as_hide_returns() {
+        let control = idle_control();
+        let rect = Mutex::new(CancelRect::default());
+        let elsewhere = CGPoint::new(10.0, 10.0);
+
+        control.show("synthetic subtitle");
+        // What the pump does once the curtain is on screen.
+        *rect.lock().expect("cancel rect") = SYNTHETIC_CANCEL_RECT;
+        control.visible.store(true, Ordering::SeqCst);
+        assert!(swallow_user_event(
+            &control,
+            &rect,
+            CGEventType::LeftMouseDown,
+            &user_click(elsewhere)
+        ));
+
+        // The pump has not taken the curtain down yet, so the rect is stale.
+        control.hide();
+        assert!(!swallow_user_event(
+            &control,
+            &rect,
+            CGEventType::LeftMouseDown,
+            &user_click(elsewhere)
+        ));
+        assert!(!control.is_cancelled());
+    }
+
+    #[test]
+    fn esc_or_the_cancel_button_cancels_once_the_curtain_is_visible() {
+        let rect = Mutex::new(SYNTHETIC_CANCEL_RECT);
+
+        let control = idle_control();
+        control.armed.store(true, Ordering::SeqCst);
+        control.visible.store(true, Ordering::SeqCst);
+        assert!(swallow_user_event(
+            &control,
+            &rect,
+            CGEventType::KeyDown,
+            &user_key(0)
+        ));
+        assert!(!control.is_cancelled(), "only Esc cancels");
+        assert!(swallow_user_event(
+            &control,
+            &rect,
+            CGEventType::KeyDown,
+            &user_key(ESC_KEYCODE as u16)
+        ));
+        assert!(control.is_cancelled());
+
+        let control = idle_control();
+        control.armed.store(true, Ordering::SeqCst);
+        control.visible.store(true, Ordering::SeqCst);
+        assert!(swallow_user_event(
+            &control,
+            &rect,
+            CGEventType::LeftMouseDown,
+            &user_click(CGPoint::new(10.0, 10.0))
+        ));
+        assert!(!control.is_cancelled(), "a click outside the button");
+        assert!(swallow_user_event(
+            &control,
+            &rect,
+            CGEventType::LeftMouseDown,
+            &user_click(CGPoint::new(150.0, 110.0))
+        ));
+        assert!(control.is_cancelled());
     }
 
     #[test]
