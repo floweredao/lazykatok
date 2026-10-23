@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use chrono::{TimeZone, Utc};
+use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OpenFlags};
 use sha2::{Digest, Sha256};
 
@@ -372,6 +373,19 @@ fn coerce_log_id(value: &serde_json::Value) -> Option<i64> {
     }
 }
 
+/// An optional metadata column (`supplement`, `attachment`) as text.
+///
+/// These only ever yield a reply link, so a value that cannot be read as text
+/// must cost that link and nothing more. Read strictly, a non-UTF-8 BLOB failed
+/// the whole row and dropped the message — which `--prune-deleted` then took for
+/// a deletion upstream. A BLOB that holds UTF-8 is read like TEXT.
+fn metadata_text(row: &rusqlite::Row<'_>, index: usize) -> Option<String> {
+    match row.get_ref(index).ok()? {
+        ValueRef::Text(bytes) | ValueRef::Blob(bytes) => String::from_utf8(bytes.to_vec()).ok(),
+        _ => None,
+    }
+}
+
 fn unreadable_database_warning() -> &'static str {
     "lazykatok: skipping unreadable KakaoTalk db"
 }
@@ -418,8 +432,8 @@ fn read_one(
             let text: String = row.get(4)?;
             // sentAt is epoch seconds; tolerate a float column by reading f64.
             let sent_at: f64 = row.get::<_, f64>(5).unwrap_or(0.0);
-            let supplement: Option<String> = row.get(6)?;
-            let attachment: Option<String> = row.get(7)?;
+            let supplement = metadata_text(row, 6);
+            let attachment = metadata_text(row, 7);
             Ok((
                 chat_id, log_id, author_id, msg_type, text, sent_at, supplement, attachment,
             ))

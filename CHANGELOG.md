@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Reader
+
+- A message whose `supplement` or `attachment` column holds a value that is not
+  readable as text is now read without its reply link instead of being dropped.
+  Dropping it also let `sync --prune-deleted` delete the archived copy as if the
+  message had been deleted in KakaoTalk.
+
 ### Media
 
 - Added `--allow-unverified-photos` to `media get` and `media backfill`. A

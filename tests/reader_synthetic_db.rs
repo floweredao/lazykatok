@@ -575,3 +575,57 @@ fn reads_older_schema_without_title_or_member_columns() {
         .expect("chat 700");
     assert_eq!(chat.chat_name, "chat-700");
 }
+
+/// Build a synthetic store at the derived path under a fresh home, let `rows`
+/// fill `NTChatMessage`, and read it back through the public reader.
+fn read_messages_inserted_by(rows: &str) -> lazykatok::kakao::ReaderOutput {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let home = temp.path().join("home");
+    let data_dir = temp.path().join("data");
+    std::fs::create_dir_all(&data_dir).expect("data dir");
+    let container = auth::container_dir(&home);
+    std::fs::create_dir_all(&container).expect("container dir");
+    let db_path = container.join(derive::database_name(TEST_USER_ID, TEST_UUID));
+    let key = derive::secure_key(TEST_USER_ID, TEST_UUID);
+    let conn = open_with_schema(&db_path, &key);
+    conn.execute_batch(rows).expect("insert message rows");
+    drop(conn);
+
+    let options = AuthOptions {
+        home,
+        data_dir,
+        user_id_override: Some(TEST_USER_ID),
+        uuid_override: Some(TEST_UUID.to_string()),
+        max_user_id: 0,
+    };
+    lazykatok::kakao::read_kakao_with_options(&options).expect("read kakao")
+}
+
+/// `supplement` and `attachment` are only consulted for a reply link. A value
+/// there that is not readable as text — a non-UTF-8 BLOB — must cost that link
+/// at most, never the message itself: a dropped row reads to `--prune-deleted`
+/// as a message deleted upstream. A BLOB that does hold UTF-8 JSON is metadata
+/// like any other and still resolves.
+#[test]
+fn unreadable_reply_metadata_keeps_the_message() {
+    let output = read_messages_inserted_by(
+        "INSERT INTO NTChatMessage(chatId, logId, msgId, authorId, type, supplement, attachment, message, sentAt)
+         VALUES (100, 10, 1, 500, 1, NULL, NULL, 'synthetic parent', 1700000000),
+                (100, 11, 2, 500, 1, x'ff', NULL, 'synthetic with odd supplement', 1700000100),
+                (100, 12, 3, 500, 26, NULL, x'fe', 'synthetic with odd attachment', 1700000200),
+                (100, 13, 4, 500, 26, NULL, CAST('{\"src_logId\":10}' AS BLOB), 'synthetic blob reply', 1700000300);",
+    );
+
+    let ids: Vec<&str> = output
+        .messages
+        .iter()
+        .map(|message| message.message_id.as_str())
+        .collect();
+    assert_eq!(ids, vec!["100-10", "100-11", "100-12", "100-13"]);
+    assert_eq!(output.messages[1].reply_to_message_id, None);
+    assert_eq!(output.messages[2].reply_to_message_id, None);
+    assert_eq!(
+        output.messages[3].reply_to_message_id.as_deref(),
+        Some("100-10")
+    );
+}
