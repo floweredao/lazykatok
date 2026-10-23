@@ -10,6 +10,11 @@
   image, recorded as `cdn-fetched-unverified`. Without the flag such photos are
   still refused as `cdn-unverifiable`, and videos and files without `cs` are
   refused either way.
+- `media backfill --dry-run` no longer writes files. A photo or video served
+  from the local KakaoTalk cache (full image or thumbnail) used to be
+  decrypted and saved, creating the output directory, even though the dry run
+  promises to write nothing. It is now decrypted only to prove it can be and
+  reported as `full-would-decrypt` or `thumb-would-decrypt` with no path.
 
 ### Watch
 

@@ -106,7 +106,9 @@ pub struct MediaResolveOptions {
     /// Evaluate every tier precondition but perform no request and write no
     /// file. A frame that would have been downloaded lands in
     /// [`MediaTier::Planned`] instead, so a preview distinguishes "would fetch"
-    /// from "expired" — which switching the CDN tier off cannot do.
+    /// from "expired" — which switching the CDN tier off cannot do. A frame the
+    /// local cache would serve is still decrypted, to prove it can be, but is
+    /// reported with no path.
     pub dry_run: bool,
     /// Store a photo whose attachment carries no `cs` from the CDN anyway,
     /// provided the body is exactly the declared size and is an image.
@@ -423,6 +425,14 @@ where
         let full = media_dirs.find_media_file(chat_id, &frame.full_stem, frame.full_ext);
         if let Some(full_path) = full {
             match read_and_decrypt(&full_path, frame.log_id) {
+                // The cache decrypted, which is all a preview needs to know; a
+                // dry run writes no file.
+                Ok(_) if options.dry_run => {
+                    return Ok((
+                        record(frame, MediaTier::Full, "full-would-decrypt", None, &[]),
+                        errors,
+                    ));
+                }
                 Ok(body) => {
                     let out = options.output_dir.join(format!(
                         "{}{}",
@@ -564,6 +574,14 @@ where
         let thumb = media_dirs.find_media_file(chat_id, &frame.thumb_stem, ".thm");
         if let Some(thumb_path) = thumb {
             match read_and_decrypt(&thumb_path, frame.log_id) {
+                Ok(_) if options.dry_run => {
+                    let reason = join_reasons(
+                        why.iter()
+                            .map(String::as_str)
+                            .chain(["thumb-would-decrypt"]),
+                    );
+                    return Ok((record(frame, MediaTier::Thumb, &reason, None, &[]), errors));
+                }
                 Ok(body) => {
                     let out = options.output_dir.join(format!(
                         "{}_thumb{}",
@@ -1080,6 +1098,61 @@ mod tests {
         assert_eq!(
             report.records[0].tier_reason,
             "full-not-cached+cdn-would-fetch-unverified"
+        );
+    }
+
+    #[test]
+    fn dry_run_writes_no_file_for_a_locally_cached_photo_or_thumbnail() {
+        let (tmp, dirs, mut options) = fixture();
+        options.dry_run = true;
+        let input = frame();
+        let full = write_cached_media(
+            tmp.path(),
+            &input.full_stem,
+            ".img",
+            &bytes_from_hex(PYTHON_REFERENCE_PKV2_HEX),
+        );
+
+        let report = resolve_media_frames_with_fetcher(
+            CHAT_ID,
+            std::slice::from_ref(&input),
+            &dirs,
+            &options,
+            |_, _, _| panic!("a dry run performs no request"),
+        )
+        .expect("resolve");
+
+        assert_eq!(report.records[0].tier, MediaTier::Full);
+        assert_eq!(report.records[0].tier_reason, "full-would-decrypt");
+        assert_eq!(report.records[0].path, None);
+        assert!(
+            !options.output_dir.exists(),
+            "a dry run must not create the output dir or write the decrypted photo"
+        );
+
+        std::fs::remove_file(full).expect("drop full cache");
+        write_cached_media(
+            tmp.path(),
+            &input.thumb_stem,
+            ".thm",
+            &bytes_from_hex(PYTHON_REFERENCE_PKV2_HEX),
+        );
+
+        let report =
+            resolve_media_frames_with_fetcher(CHAT_ID, &[input], &dirs, &options, |_, _, _| {
+                panic!("a dry run performs no request")
+            })
+            .expect("resolve");
+
+        assert_eq!(report.records[0].tier, MediaTier::Thumb);
+        assert_eq!(
+            report.records[0].tier_reason,
+            "full-not-cached+thumb-would-decrypt"
+        );
+        assert_eq!(report.records[0].path, None);
+        assert!(
+            !options.output_dir.exists(),
+            "a dry run must not write the decrypted thumbnail"
         );
     }
 

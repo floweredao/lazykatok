@@ -388,7 +388,7 @@ pub(crate) enum MediaCommand {
         /// kind with no local cache to fall back on.
         #[arg(long = "kind", value_name = "KIND")]
         kinds: Vec<String>,
-        /// Report what would be fetched without downloading anything.
+        /// Report what would be fetched without downloading or writing anything.
         #[arg(long)]
         dry_run: bool,
         /// Also store a photo whose attachment has no `cs` fingerprint from the
