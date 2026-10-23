@@ -2459,3 +2459,43 @@ fn a_message_moved_later_is_rebuilt_from_its_old_position() {
     );
     assert_archive_invariants(staged.connection(), messages.len() as i64);
 }
+
+/// The windows a long chunk spills across are listed in reading order.
+///
+/// They were ordered by `parent_id`, a content hash, so `chunk parent` and
+/// `chunk context` showed the pieces of one long message shuffled.
+#[test]
+fn the_windows_of_a_split_chunk_are_listed_in_reading_order() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let archive = Archive::open(&dir.path().join("archive.sqlite3")).expect("open archive");
+    let text = (0..8)
+        .map(|part| format!("{part}").repeat(1_000))
+        .collect::<String>();
+    archive
+        .sync_messages(&[raw(
+            "chat-long",
+            "m0",
+            "Alice",
+            chrono::Utc::now(),
+            &text,
+            None,
+        )])
+        .expect("sync");
+    rebuild_chunks(&archive).expect("rebuild");
+
+    let chunk = &archive.chunks_for_chat("chat-long").expect("chunks")[0];
+    let windows = archive
+        .parent_windows_for_child(&chunk.chunk_id)
+        .expect("parent windows");
+    assert!(windows.len() > 2, "the chunk must split: {}", windows.len());
+    let joined = windows
+        .iter()
+        .map(|window| window.text.as_str())
+        .collect::<String>();
+    assert_eq!(joined, format!("[Alice] {text}"));
+    let ids = windows
+        .iter()
+        .map(|window| window.parent_id.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(chunk.window_parent_ids, ids);
+}
