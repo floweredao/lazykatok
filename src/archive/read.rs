@@ -35,6 +35,8 @@ pub const RAW_MESSAGES_FOR_CHAT_SINCE_QUERY: &str =
      ORDER BY timestamp, message_id";
 
 impl Archive {
+    /// A chat's chunks in reading order. Ties on `started_at` are broken by `rowid`, not
+    /// `chunk_id`; see `neighbor_chunk` for why that is reading order.
     pub fn chunks_for_chat(&self, chat_id: &str) -> Result<Vec<ChunkSummary>> {
         let mut stmt = self
             .conn
@@ -43,7 +45,7 @@ impl Archive {
                     ended_at, message_count
              FROM chunks
              WHERE chat_id = ?1
-             ORDER BY started_at, chunk_id",
+             ORDER BY started_at, rowid",
             )
             .map_err(Error::Sql)?;
         let rows = stmt
