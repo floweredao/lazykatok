@@ -93,8 +93,8 @@ impl KatokConfig {
         if let Some(url) = first_env(&lookup, &["KATOK_EMBED_URL", "LAZYKATOK_EMBED_URL"]) {
             self.embedder_url = Some(url);
             // A URL selects the HTTP embedder unless the caller explicitly asked for a
-            // non-network mode.
-            if !matches!(mode.as_deref(), Some("mock" | "local-test")) {
+            // non-network mode, here or in `katok.toml`.
+            if !matches!(self.embedder_provider.as_str(), "mock" | "local-test") {
                 self.embedder_provider = "openai-compatible".to_string();
             }
         }
@@ -177,6 +177,15 @@ mod tests {
             ("KATOK_EMBED_URL", "http://127.0.0.1:8080"),
         ]));
         assert_eq!(config.embedder_provider, "local-test");
+        assert_eq!(config.embedder_family(), "mock");
+    }
+
+    #[test]
+    fn embed_url_does_not_override_test_mode_set_in_the_config_file() {
+        let mut config: KatokConfig =
+            toml::from_str("embedder_provider = \"mock\"\n").expect("parse provider");
+        config.apply_env_lookup(lookup(&[("KATOK_EMBED_URL", "http://127.0.0.1:8080")]));
+        assert_eq!(config.embedder_provider, "mock");
         assert_eq!(config.embedder_family(), "mock");
     }
 

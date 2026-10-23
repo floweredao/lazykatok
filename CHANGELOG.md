@@ -8,6 +8,13 @@
   if no semantic index was ever committed. It used to report sync as done and
   point at `index`, which refuses to run without an archive.
 
+### Semantic search
+
+- `KATOK_EMBED_URL` no longer switches to the HTTP embedder when `katok.toml`
+  sets `embedder_provider` to `mock` or `local-test`. Only `KATOK_EMBEDDER`
+  was checked, so an endpoint exported in the environment overrode an offline
+  provider chosen in the config file and sent archive text to that endpoint.
+
 ### Media
 
 - Added `--allow-unverified-photos` to `media get` and `media backfill`. A

@@ -74,7 +74,7 @@ lazykatok transcript --chat <chat_id> --from 2026-08-01 --to 2026-08-31 --out ex
 
 | 환경 변수 | 의미 |
 | --- | --- |
-| `KATOK_EMBED_URL` | 엔드포인트 URL. 설정하면 `openai-compatible` 백엔드가 선택됩니다. |
+| `KATOK_EMBED_URL` | 엔드포인트 URL. 설정하면 `openai-compatible` 백엔드가 선택됩니다. 단, `KATOK_EMBEDDER`나 설정 파일의 `embedder_provider`가 `mock`·`local-test`이면 네트워크를 쓰지 않는 그 모드가 유지됩니다. |
 | `KATOK_EMBED_MODEL` | 요청에 보낼 모델 이름 (`openai/<model>` ID로 기록) |
 | `KATOK_EMBED_DIM` | 벡터 차원 (예: `Qwen3-Embedding-0.6B`는 `1024`) |
 | `KATOK_EMBED_API_KEY` | 보낼 `Authorization: Bearer` 토큰 |
