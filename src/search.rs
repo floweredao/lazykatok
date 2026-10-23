@@ -159,8 +159,16 @@ fn snippet(text: &str, query: &str, max_chars: usize) -> String {
     // `find` reports a BYTE offset while `skip` counts CHARS. Passing one to the
     // other overshoots by the encoding width — about 3x for Hangul — so a hit
     // late in a long Korean chunk skipped past the end and returned "".
-    let start_char = trimmed
-        .find(query)
+    //
+    // Look the hit up the way the rankers matched it: keyword search trims the query and LIKE
+    // folds ASCII case, and BM25 matches each term on its own. ASCII lowercasing keeps byte
+    // offsets, so an offset in the folded text is valid in `trimmed`.
+    let haystack = trimmed.to_ascii_lowercase();
+    let query = query.trim().to_ascii_lowercase();
+    let start_char = std::iter::once(query.as_str())
+        .chain(query.split_whitespace())
+        .filter(|needle| !needle.is_empty())
+        .find_map(|needle| haystack.find(needle))
         .map(|byte_offset| trimmed[..byte_offset].chars().count())
         .unwrap_or(0);
     trimmed
@@ -195,6 +203,39 @@ mod snippet_tests {
         let out = snippet(&text, "needle", 120);
         assert!(out.contains("needle"));
         assert!(out.starts_with(&"a".repeat(20)));
+    }
+
+    #[test]
+    fn hit_found_by_case_insensitive_like_is_shown() {
+        // SQLite LIKE folds ASCII case, so `meeting` finds a chunk saying `MEETING`.
+        let text = format!("{}MEETING{}", "가".repeat(300), "나".repeat(300));
+        let out = snippet(&text, "meeting", 120);
+        assert!(
+            out.contains("MEETING"),
+            "snippet must contain the match: {out}"
+        );
+    }
+
+    #[test]
+    fn query_padding_does_not_hide_the_hit() {
+        // Keyword search trims the query before matching.
+        let text = format!("{}찾는말{}", "가".repeat(300), "나".repeat(300));
+        let out = snippet(&text, "  찾는말 ", 120);
+        assert!(
+            out.contains("찾는말"),
+            "snippet must contain the match: {out}"
+        );
+    }
+
+    #[test]
+    fn multi_term_query_shows_a_term_that_matched() {
+        // BM25 matches the terms independently, so the phrase need not appear.
+        let text = format!("{}보고서{}", "가".repeat(300), "나".repeat(300));
+        let out = snippet(&text, "회의 보고서", 120);
+        assert!(
+            out.contains("보고서"),
+            "snippet must contain a matched term: {out}"
+        );
     }
 
     #[test]
