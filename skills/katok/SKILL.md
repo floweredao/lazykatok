@@ -155,7 +155,7 @@ katok media backfill --dry-run --json    # what would be fetched, no requests at
 katok media backfill --json              # every room, live links only, kind=file by default
 ```
 
-It walks every room holding media, skips anything already saved without a network call — so re-running is idempotent and resumes an interrupted run — and reports per-tier totals. `--dry-run` distinguishes `planned` (would fetch) from `stub`/`cdn-expired` (already gone), which switching the CDN tier off cannot do.
+It walks every room holding media, skips anything already saved without a network call — so re-running is idempotent and resumes an interrupted run — and reports per-tier totals. `--dry-run` distinguishes `planned` (would fetch) from `stub`/`cdn-expired` (already gone), which switching the CDN tier off cannot do. A dry run writes no file: a photo the local cache would serve is reported as `full`/`thumb` with no path.
 
 Run it on a schedule if attachments matter. A backfill started after the window has closed cannot recover anything: report the expired count honestly rather than implying the files can be retrieved.
 
