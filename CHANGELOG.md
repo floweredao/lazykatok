@@ -8,6 +8,10 @@
   readable as text is now read without its reply link instead of being dropped.
   Dropping it also let `sync --prune-deleted` delete the archived copy as if the
   message had been deleted in KakaoTalk.
+- A message row with no usable `sentAt` (NULL, `0`, or not a number) is now
+  skipped and counted with the unreadable rows instead of being archived as sent
+  on 1970-01-01. That date widened the range `sync --prune-deleted` trusts for
+  the chat back to 1970, so it deleted archived messages KakaoTalk had pruned.
 
 ### Media
 
