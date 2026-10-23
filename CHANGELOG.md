@@ -11,6 +11,13 @@
   still refused as `cdn-unverifiable`, and videos and files without `cs` are
   refused either way.
 
+### Reading
+
+- A group room whose display-member list holds a negative member id keeps its
+  reconstructed name. The binary plist reader refused 8-byte integers with the
+  high bit set, which is how the format stores a negative value, and dropped
+  the whole list.
+
 ### Watch
 
 - `watch` no longer re-reads the macOS store on a poll when none of its

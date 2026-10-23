@@ -114,8 +114,12 @@ fn read_int(blob: &[u8], offset: usize) -> Option<i64> {
         return None;
     }
     let len = 1usize << power;
-    // Reject an 8-byte value above i64::MAX rather than wrapping it negative.
-    i64::try_from(be_uint(blob.get(offset + 1..offset + 1 + len)?)?).ok()
+    let value = be_uint(blob.get(offset + 1..offset + 1 + len)?)?;
+    // 1-, 2- and 4-byte ints are unsigned; the 8-byte form is two's complement
+    // (writers spill unsigned values above i64::MAX into 16 bytes instead), so
+    // a negative int arrives here and must keep its sign. Narrower widths never
+    // reach bit 63, so the same reinterpretation is exact for them.
+    Some(value as i64)
 }
 
 /// Big-endian unsigned read of 1..=8 bytes.
@@ -173,6 +177,13 @@ mod tests {
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x12,
     ];
+    // [-1, 5] (a negative int is always written as a signed 8-byte value)
+    const BPLIST_NEGATIVE: &[u8] = &[
+        0x62, 0x70, 0x6c, 0x69, 0x73, 0x74, 0x30, 0x30, 0xa2, 0x01, 0x02, 0x13, 0xff, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0x10, 0x05, 0x08, 0x0b, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x16,
+    ];
 
     #[test]
     fn parses_small_int_array() {
@@ -200,6 +211,11 @@ mod tests {
     #[test]
     fn parses_mixed_width_ints() {
         assert_eq!(int_array(BPLIST_WIDE), Some(vec![1, 4_000_000_000]));
+    }
+
+    #[test]
+    fn parses_eight_byte_ints_as_signed() {
+        assert_eq!(int_array(BPLIST_NEGATIVE), Some(vec![-1, 5]));
     }
 
     #[test]
