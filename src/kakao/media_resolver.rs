@@ -308,9 +308,13 @@ fn is_invisible_or_reordering(c: char) -> bool {
 fn sanitize_filename(name: &str) -> String {
     const MAX_STEM_BYTES: usize = 120;
 
+    // Strip before normalizing: an invisible character between a base and its
+    // combining part blocks composition, so removing it afterwards would leave
+    // the name decomposed.
     let cleaned: String = name
-        .nfc()
+        .chars()
         .filter(|c| !is_invisible_or_reordering(*c))
+        .nfc()
         .map(|c| {
             if c == '/' || c == '\\' || c == ':' || c.is_control() {
                 '_'
@@ -1235,6 +1239,17 @@ mod tests {
         assert_eq!(out, "한글.pdf");
         // Two names that look identical must not differ in bytes on disk.
         assert_eq!(out, sanitize_filename("한글.pdf"));
+    }
+
+    #[test]
+    fn sanitized_filename_is_nfc_after_invisible_characters_are_stripped() {
+        // An invisible character between a base and its combining part blocks
+        // composition, so stripping it must happen before normalizing or the
+        // name stays decomposed while looking identical to the composed one.
+        let split_hangul = "\u{1112}\u{200B}\u{1161}\u{11ab}.pdf";
+        assert_eq!(sanitize_filename(split_hangul), "\u{D55C}.pdf");
+        let split_accent = "cafe\u{2060}\u{0301}.pdf";
+        assert_eq!(sanitize_filename(split_accent), "caf\u{E9}.pdf");
     }
 
     #[test]
