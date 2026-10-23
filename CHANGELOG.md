@@ -15,6 +15,13 @@
   was checked, so an endpoint exported in the environment overrode an offline
   provider chosen in the config file and sent archive text to that endpoint.
 
+### Config
+
+- A `semantic_dir` in `katok.toml` that resolves to the data directory or one
+  of its ancestors (`""`, `"."`, `".."`, or such an absolute path) is now
+  refused as an invalid semantic path. `wipe-index --yes` removes the semantic
+  directory recursively, so it used to delete the archive along with the index.
+
 ### Search
 
 - `search hybrid` gives every window a BM25 chunk spans that chunk's rank. A

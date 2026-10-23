@@ -127,3 +127,49 @@ fn fixture(name: &str) -> std::path::PathBuf {
         .join("tests/fixtures/kakao")
         .join(name)
 }
+
+#[test]
+fn cli_refuses_a_semantic_dir_that_would_hold_the_archive() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let data_dir = dir.path().join("data");
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
+        .args([
+            "--data-dir",
+            data_dir.to_str().expect("utf8 data"),
+            "sync",
+            "--source",
+            "fixture",
+            fixture("replies.jsonl").to_str().expect("utf8 fixture"),
+            "--json",
+        ])
+        .assert()
+        .success();
+
+    for semantic_dir in ["", ".", "..", "nested/../.."] {
+        let config = dir.path().join("katok.toml");
+        std::fs::write(&config, format!("semantic_dir = \"{semantic_dir}\"\n"))
+            .expect("write config");
+
+        // `wipe-index` removes the semantic dir recursively, so one that resolves to
+        // the data dir (or above it) would take the archive with it.
+        Command::cargo_bin("lazykatok")
+            .expect("lazykatok binary")
+            .args([
+                "--config",
+                config.to_str().expect("utf8 config"),
+                "--data-dir",
+                data_dir.to_str().expect("utf8 data"),
+                "wipe-index",
+                "--yes",
+                "--json",
+            ])
+            .assert()
+            .failure()
+            .stdout(predicate::str::contains("invalid semantic path"));
+        assert!(
+            data_dir.join("archive.sqlite3").is_file(),
+            "semantic_dir = {semantic_dir:?} removed the archive"
+        );
+    }
+}
