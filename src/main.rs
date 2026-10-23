@@ -3,7 +3,7 @@ use clap::Parser;
 use cli::Cli;
 use lazykatok::{
     config::KatokConfig,
-    paths::{default_data_dir, ensure_private_dir},
+    paths::{default_data_dir, ensure_private_dir, resolve_semantic_dir},
 };
 
 mod cli;
@@ -47,11 +47,8 @@ fn run(cli: Cli) -> Result<()> {
     };
     ensure_private_dir(&data_dir).context("create private data directory")?;
     let archive_path = data_dir.join("archive.sqlite3");
-    let semantic_dir = if config.semantic_dir.is_absolute() {
-        config.semantic_dir.clone()
-    } else {
-        data_dir.join(&config.semantic_dir)
-    };
+    let semantic_dir =
+        resolve_semantic_dir(&data_dir, &config.semantic_dir).context("resolve semantic dir")?;
 
     commands::run(cli.command, config, data_dir, archive_path, semantic_dir)
 }
