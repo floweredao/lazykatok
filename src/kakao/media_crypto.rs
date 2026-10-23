@@ -54,6 +54,11 @@ pub fn decrypt_pkv2_image(file_bytes: &[u8], log_id: i64) -> Result<Vec<u8>> {
             "invalid Pkv2 plaintext: missing media wrapper".to_string(),
         ));
     }
+    if plaintext.len() == PLAINTEXT_HEADER_LEN {
+        return Err(Error::Kakao(
+            "invalid Pkv2 plaintext: missing image bytes".to_string(),
+        ));
+    }
     Ok(plaintext[PLAINTEXT_HEADER_LEN..].to_vec())
 }
 
@@ -131,6 +136,42 @@ mod tests {
     fn rejects_non_pkv2_files() {
         let err = decrypt_pkv2_image(b"nope", VECTOR_LOG_ID).expect_err("invalid magic");
         assert!(err.to_string().contains("not a Pkv2 file"));
+    }
+
+    /// Encrypt a synthetic plaintext the way KakaoTalk lays out a Pkv2 file.
+    fn synthetic_pkv2(log_id: i64, plaintext: &[u8]) -> Vec<u8> {
+        use cbc::cipher::BlockEncryptMut;
+
+        let iv = [0x5a; IV_LEN];
+        let key = Sha256::digest(media_key_string(log_id).as_bytes());
+        let mut buf = plaintext.to_vec();
+        buf.resize(plaintext.len() + IV_LEN, 0);
+        let ciphertext = cbc::Encryptor::<Aes256>::new_from_slices(&key, &iv)
+            .expect("key and iv")
+            .encrypt_padded_mut::<Pkcs7>(&mut buf, plaintext.len())
+            .expect("room for padding")
+            .to_vec();
+
+        let mut file = PKV2_MAGIC.to_vec();
+        file.extend_from_slice(&iv);
+        file.extend_from_slice(&ciphertext);
+        file
+    }
+
+    #[test]
+    fn rejects_a_wrapper_with_no_image_after_it() {
+        let one_byte = [vec![0x11; PLAINTEXT_HEADER_LEN], vec![0xff]].concat();
+        let image = decrypt_pkv2_image(&synthetic_pkv2(VECTOR_LOG_ID, &one_byte), VECTOR_LOG_ID)
+            .expect("wrapper plus one byte");
+        assert_eq!(image, vec![0xff]);
+
+        // A plaintext that is exactly the wrapper decrypts cleanly but holds no
+        // image. Returning it as an empty image let the resolver record the
+        // full tier as decrypted and skip the thumbnail and CDN fallbacks.
+        let wrapper_only = vec![0x11; PLAINTEXT_HEADER_LEN];
+        let err = decrypt_pkv2_image(&synthetic_pkv2(VECTOR_LOG_ID, &wrapper_only), VECTOR_LOG_ID)
+            .expect_err("wrapper with no image");
+        assert!(err.to_string().contains("missing image bytes"));
     }
 
     #[test]
