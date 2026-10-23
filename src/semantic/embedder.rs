@@ -135,7 +135,7 @@ impl OpenAiCompatibleEmbedder {
             api_key: config.embedder_api_key.clone(),
             query_prefix: config.query_prefix.clone(),
             passage_prefix: config.passage_prefix.clone(),
-            id: format!("openai/{}", config.embedder_model),
+            id: openai_embedder_id(&config.embedder_model, config.passage_prefix.as_deref()),
         })
     }
 
@@ -240,6 +240,26 @@ struct EmbeddingItem {
     embedding: Vec<f32>,
     #[serde(default)]
     index: Option<usize>,
+}
+
+/// The id stored vectors are recorded under, which decides whether a later
+/// index may reuse them.
+///
+/// The passage prefix is part of every stored vector's input, so changing it
+/// must not let the old vectors pass as current. Without a prefix the id stays
+/// `openai/<model>`, so existing indexes keep their vectors.
+fn openai_embedder_id(model: &str, passage_prefix: Option<&str>) -> String {
+    match passage_prefix.filter(|prefix| !prefix.is_empty()) {
+        Some(prefix) => {
+            let digest = Sha256::digest(prefix.as_bytes());
+            let tag = digest[..6]
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            format!("openai/{model}+passage-prefix-{tag}")
+        }
+        None => format!("openai/{model}"),
+    }
 }
 
 /// Normalize a base URL into the embeddings endpoint.

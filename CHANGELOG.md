@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Semantic search
+
+- Changing `passage_prefix` for the OpenAI-compatible embedder now re-embeds
+  on the next `index`. The vectors were recorded under `openai/<model>`
+  whatever the prefix, so a plain `index` kept reusing vectors embedded with
+  the old prefix until `--full`. With a prefix set, the id becomes
+  `openai/<model>+passage-prefix-<hash>`; without one it is unchanged, so
+  existing indexes keep their vectors.
+
 ### Media
 
 - Added `--allow-unverified-photos` to `media get` and `media backfill`. A

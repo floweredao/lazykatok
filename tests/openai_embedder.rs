@@ -405,3 +405,71 @@ fn query_and_passage_prefixes_are_sent_to_the_endpoint() {
         "the search query carried no query prefix: {inputs:?}"
     );
 }
+
+#[test]
+fn changing_the_passage_prefix_re_embeds_instead_of_reusing_old_vectors() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let data_dir = dir.path().join("data");
+    let plain = dir.path().join("plain.toml");
+    std::fs::write(&plain, "").expect("write plain config");
+    let prefixed = dir.path().join("prefixed.toml");
+    std::fs::write(&prefixed, "passage_prefix = \"passage: \"\n").expect("write prefixed config");
+    let server = MockEmbeddingServer::start();
+
+    let sync_output = cli()
+        .args([
+            "--data-dir",
+            data_dir.to_str().expect("utf8 data dir"),
+            "sync",
+            "--source",
+            "fixture",
+            fixture("replies.jsonl").to_str().expect("utf8 fixture"),
+            "--json",
+        ])
+        .output()
+        .expect("run sync");
+    assert!(sync_output.status.success());
+
+    let index_with = |config: &std::path::Path| {
+        let mut index = cli();
+        configure_http_embedder(&mut index, &server);
+        let output = index
+            .args([
+                "--config",
+                config.to_str().expect("utf8 config"),
+                "--data-dir",
+                data_dir.to_str().expect("utf8 data dir"),
+                "index",
+                "--json",
+            ])
+            .output()
+            .expect("run index");
+        assert!(
+            output.status.success(),
+            "index failed: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        stdout_json(&output)
+    };
+
+    let first = index_with(&plain);
+    assert_eq!(first["embedded_texts"].as_u64(), Some(1));
+    assert!(server
+        .seen_inputs()
+        .iter()
+        .all(|input| !input.starts_with("passage: ")));
+
+    // Every stored vector was embedded without the prefix, so none of them is
+    // what the endpoint returns for the same passage once the prefix is set.
+    let second = index_with(&prefixed);
+    assert_eq!(second["reused_vectors"].as_u64(), Some(0));
+    assert_eq!(second["embedded_texts"].as_u64(), Some(1));
+    assert!(server
+        .seen_inputs()
+        .iter()
+        .any(|input| input.starts_with("passage: ")));
+
+    let third = index_with(&prefixed);
+    assert_eq!(third["embedded_texts"].as_u64(), Some(0));
+    assert_eq!(third["reused_vectors"].as_u64(), Some(1));
+}
