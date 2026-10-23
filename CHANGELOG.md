@@ -10,6 +10,10 @@
   image, recorded as `cdn-fetched-unverified`. Without the flag such photos are
   still refused as `cdn-unverifiable`, and videos and files without `cs` are
   refused either way.
+- A file attachment name is now normalized to NFC after invisible characters
+  are stripped rather than before. An invisible character between a letter and
+  its combining part used to leave the saved name decomposed, so it differed in
+  bytes from the same name typed normally.
 
 ### Reading
 
