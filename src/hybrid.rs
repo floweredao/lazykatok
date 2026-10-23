@@ -46,7 +46,8 @@ pub async fn hybrid_search_with_config(
         semantic_search_live_with_config(archive, semantic_dir, query, pool, config)
             .await?
             .into_iter()
-            .map(|hit| hit.chunk_id)
+            .enumerate()
+            .map(|(index, hit)| (hit.chunk_id, index + 1))
             .collect::<Vec<_>>();
     let mut chunk_windows = Vec::new();
     for chunk_id in bm25_chunk_ids(archive, query, pool)? {
@@ -59,30 +60,40 @@ pub async fn hybrid_search_with_config(
 }
 
 /// Turns a ranked list of chunks, each given as the windows containing it, into
-/// a ranked list of windows. A window keeps the rank of its best chunk; a chunk
-/// in no window contributes nothing, as the semantic index cannot return it.
-fn lift_to_windows(chunk_windows: Vec<Vec<String>>) -> Vec<String> {
+/// a ranked list of windows. A window keeps the rank of its best chunk, and the
+/// windows a chunk spans share that rank. A chunk in no window takes no rank, as
+/// the semantic index cannot return it, and neither does a chunk whose windows
+/// were all ranked by an earlier chunk.
+fn lift_to_windows(chunk_windows: Vec<Vec<String>>) -> Vec<(String, usize)> {
     let mut seen = HashSet::new();
-    chunk_windows
-        .into_iter()
-        .flatten()
-        .filter(|window| seen.insert(window.clone()))
-        .collect()
+    let mut lifted = Vec::new();
+    let mut rank = 0;
+    for windows in chunk_windows {
+        let mut fresh = windows
+            .into_iter()
+            .filter(|window| seen.insert(window.clone()))
+            .peekable();
+        if fresh.peek().is_some() {
+            rank += 1;
+            lifted.extend(fresh.map(|window| (window, rank)));
+        }
+    }
+    lifted
 }
 
-/// Reciprocal rank fusion over ranked id lists (best first). Ids repeated in one
-/// list count once, at their best rank. Ties keep first-seen order, so earlier
-/// lists win.
-fn reciprocal_rank_fusion(lists: &[Vec<String>]) -> Vec<String> {
+/// Reciprocal rank fusion over ranked `(id, rank)` lists (best first, ranks from
+/// 1; equal ranks are ties). Ids repeated in one list count once, at their best
+/// rank. Ties keep first-seen order, so earlier lists win.
+fn reciprocal_rank_fusion(lists: &[Vec<(String, usize)>]) -> Vec<String> {
     let mut scores: Vec<(&str, f64)> = Vec::new();
     let mut index: HashMap<&str, usize> = HashMap::new();
     for list in lists {
         let mut seen = HashSet::new();
-        for (rank, id) in list.iter().enumerate() {
+        for (id, rank) in list {
             if !seen.insert(id.as_str()) {
                 continue;
             }
-            let gain = 1.0 / (RRF_K + (rank + 1) as f64);
+            let gain = 1.0 / (RRF_K + *rank as f64);
             match index.get(id.as_str()) {
                 Some(&slot) => scores[slot].1 += gain,
                 None => {
@@ -105,16 +116,28 @@ mod tests {
         values.iter().map(|value| value.to_string()).collect()
     }
 
+    fn ranked(values: &[(&str, usize)]) -> Vec<(String, usize)> {
+        values
+            .iter()
+            .map(|(value, rank)| (value.to_string(), *rank))
+            .collect()
+    }
+
+    /// A ranking with no ties: the first id is rank 1, the next rank 2, ...
+    fn in_order(values: &[&str]) -> Vec<(String, usize)> {
+        ids(values).into_iter().zip(1..).collect()
+    }
+
     #[test]
     fn an_id_both_rankings_return_outranks_ids_only_one_returns() {
-        let fused = reciprocal_rank_fusion(&[ids(&["a", "b"]), ids(&["c", "b"])]);
+        let fused = reciprocal_rank_fusion(&[in_order(&["a", "b"]), in_order(&["c", "b"])]);
 
         assert_eq!(fused, ids(&["b", "a", "c"]));
     }
 
     #[test]
     fn ties_keep_first_seen_order_so_the_first_list_wins() {
-        let fused = reciprocal_rank_fusion(&[ids(&["a"]), ids(&["b"])]);
+        let fused = reciprocal_rank_fusion(&[in_order(&["a"]), in_order(&["b"])]);
 
         assert_eq!(fused, ids(&["a", "b"]));
     }
@@ -122,14 +145,14 @@ mod tests {
     #[test]
     fn an_id_repeated_inside_one_list_counts_once_at_its_best_rank() {
         // "a" repeated at ranks 1 and 2 must not out-score "b", which both lists return at rank 2.
-        let fused = reciprocal_rank_fusion(&[ids(&["a", "a", "b"]), ids(&["c", "b"])]);
+        let fused = reciprocal_rank_fusion(&[in_order(&["a", "a", "b"]), in_order(&["c", "b"])]);
 
         assert_eq!(fused, ids(&["b", "a", "c"]));
     }
 
     #[test]
     fn an_empty_ranking_leaves_the_other_ranking_untouched() {
-        let fused = reciprocal_rank_fusion(&[Vec::new(), ids(&["x", "y"])]);
+        let fused = reciprocal_rank_fusion(&[Vec::new(), in_order(&["x", "y"])]);
 
         assert_eq!(fused, ids(&["x", "y"]));
     }
@@ -143,13 +166,32 @@ mod tests {
             ids(&["w1", "w3"]),
         ]);
 
-        assert_eq!(lifted, ids(&["w1", "w2", "w3"]));
+        assert_eq!(lifted, in_order(&["w1", "w2", "w3"]));
+    }
+
+    #[test]
+    fn windows_sharing_one_chunk_share_its_rank() {
+        let lifted = lift_to_windows(vec![ids(&["w1", "w2"]), ids(&["w3"])]);
+
+        assert_eq!(lifted, ranked(&[("w1", 1), ("w2", 1), ("w3", 2)]));
+    }
+
+    #[test]
+    fn a_chunk_split_across_windows_does_not_push_later_bm25_windows_down() {
+        // w3 holds part of the best BM25 chunk and is third in the semantic ranking;
+        // w4 holds the second BM25 chunk and is second in the semantic ranking.
+        let lexical = lift_to_windows(vec![ids(&["w1", "w2", "w3"]), ids(&["w4"])]);
+        let semantic = ranked(&[("w9", 1), ("w4", 2), ("w3", 3)]);
+
+        let fused = reciprocal_rank_fusion(&[lexical, semantic]);
+
+        assert_eq!(fused, ids(&["w3", "w4", "w1", "w2", "w9"]));
     }
 
     #[test]
     fn a_chunk_in_no_window_is_skipped_without_shifting_later_ranks() {
         let lifted = lift_to_windows(vec![Vec::new(), ids(&["w2"])]);
 
-        assert_eq!(lifted, ids(&["w2"]));
+        assert_eq!(lifted, in_order(&["w2"]));
     }
 }
