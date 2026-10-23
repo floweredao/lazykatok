@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Doctor
+
+- `doctor --json` now recommends `sync` when the archive file is missing even
+  if no semantic index was ever committed. It used to report sync as done and
+  point at `index`, which refuses to run without an archive.
+
 ### Media
 
 - Added `--allow-unverified-photos` to `media get` and `media backfill`. A
