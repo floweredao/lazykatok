@@ -17,6 +17,9 @@
   reconstructed name. The binary plist reader refused 8-byte integers with the
   high bit set, which is how the format stores a negative value, and dropped
   the whole list.
+- Deriving the store key no longer panics on a cached uuid that is not ASCII.
+  Such a uuid now derives a key that fails verification like any other wrong
+  uuid, and resolution moves on to the next candidate.
 
 ### Watch
 
