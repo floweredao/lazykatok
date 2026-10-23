@@ -680,3 +680,53 @@ fn a_row_without_a_send_time_is_skipped_not_dated_to_the_epoch() {
         "history older than the store's reach must be kept: {doomed:?}"
     );
 }
+
+/// `<derived>` and `<derived>.db` are one store to auth, so when an install
+/// left a copy under each spelling in different roots, the stale one must not
+/// be read beside the live one: the reader keeps the first copy of a message it
+/// sees, and the abandoned root sorted first, so an edit made since the move
+/// read back as the old text.
+#[test]
+fn a_stale_twin_under_the_other_db_spelling_does_not_shadow_the_live_store() {
+    use std::time::{Duration, SystemTime};
+
+    let home = tempfile::tempdir().expect("temp home");
+    let name = derive::database_name(TEST_USER_ID, TEST_UUID);
+    let key = derive::secure_key(TEST_USER_ID, TEST_UUID);
+    let stale_dir = lazykatok::kakao::store::app_support_dir(home.path());
+    let live_dir = lazykatok::kakao::store::container_dir(home.path());
+    std::fs::create_dir_all(&stale_dir).expect("stale root");
+    std::fs::create_dir_all(&live_dir).expect("live root");
+    let stale = stale_dir.join(format!("{name}.db"));
+    let live = live_dir.join(&name);
+    for (path, text, mtime) in [
+        (&stale, "synthetic text before the edit", 1_000),
+        (&live, "synthetic text after the edit", 2_000),
+    ] {
+        let conn = open_with_schema(path, &key);
+        conn.execute(
+            "INSERT INTO NTChatMessage(chatId, logId, msgId, authorId, type, message, sentAt)
+             VALUES (100, 10, 1, 500, 1, ?1, 1700000000)",
+            [text],
+        )
+        .expect("insert message");
+        drop(conn);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .expect("open fixture")
+            .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(mtime))
+            .expect("set mtime");
+    }
+
+    let options = AuthOptions {
+        home: home.path().to_path_buf(),
+        data_dir: home.path().join("data"),
+        user_id_override: Some(TEST_USER_ID),
+        uuid_override: Some(TEST_UUID.to_string()),
+        max_user_id: 0,
+    };
+    let output = lazykatok::kakao::read_kakao_with_options(&options).expect("read kakao");
+    assert_eq!(output.messages.len(), 1);
+    assert_eq!(output.messages[0].text, "synthetic text after the edit");
+}
