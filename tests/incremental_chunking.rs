@@ -2419,3 +2419,43 @@ fn pruning_a_reply_drops_its_reply_edge_and_matches_a_full_rebuild() {
     );
     assert_archive_invariants(&conn, 2);
 }
+
+/// An update that moves a message later must rebuild from where it used to sit.
+///
+/// Scoping the cut by the new timestamp alone kept the chunk that still held the message at its
+/// old position, so the message ended up in two chunks and the prefix no longer matched a full
+/// rebuild.
+#[test]
+fn a_message_moved_later_is_rebuilt_from_its_old_position() {
+    let (mut messages, _split) = bursty_conversation();
+    let full_dir = tempfile::tempdir().expect("tempdir");
+    let full = Archive::open(&full_dir.path().join("archive.sqlite3")).expect("open archive");
+    full.sync_messages(&messages).expect("sync");
+    rebuild_chunks(&full).expect("seed full");
+
+    let staged_dir = tempfile::tempdir().expect("tempdir");
+    let staged = Archive::open(&staged_dir.path().join("archive.sqlite3")).expect("open archive");
+    staged.sync_messages(&messages).expect("sync");
+    rebuild_chunks(&staged).expect("seed staged");
+
+    // The first message of the second burst now reports a time after the third burst.
+    let old_timestamp = messages[3].timestamp.to_rfc3339();
+    messages[3].timestamp = messages[8].timestamp + chrono::Duration::seconds(30);
+    let change = [messages[3].clone()];
+    full.sync_messages(&change).expect("sync change full");
+    rebuild_chunks(&full).expect("ground-truth full rebuild");
+
+    let report = staged.sync_messages(&change).expect("sync change staged");
+    assert_eq!(report.updated_messages, 1);
+    assert_eq!(
+        report.touched_chats[0].earliest_changed_timestamp, old_timestamp,
+        "the change key must cover the position the message left"
+    );
+    rebuild_chunks_for_chats(&staged, settings(), &report.touched_chats).expect("scoped rebuild");
+    assert_eq!(
+        snapshot(full.connection()),
+        snapshot(staged.connection()),
+        "moving a message later diverged from a full rebuild"
+    );
+    assert_archive_invariants(staged.connection(), messages.len() as i64);
+}
