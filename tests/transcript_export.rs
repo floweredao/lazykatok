@@ -168,3 +168,63 @@ fn user_authored_json_with_membership_keys_stays_in_the_transcript() {
         "a text message must not be classified as a system feed from its body alone"
     );
 }
+
+#[test]
+fn since_written_with_z_includes_a_message_sent_at_that_instant() {
+    // The archive stores `+00:00`; a `Z` cutoff for the same instant compared as text sorted
+    // after it, dropping the boundary message the help promises ("at or after").
+    let messages = vec![
+        message("m001", "A", 0, "경계 이전"),
+        message("m002", "A", 300, "경계 메시지"),
+        message("m003", "A", 360, "경계 이후"),
+    ];
+    let (dir, archive) = archive_with(&messages);
+
+    let report = export_transcript(
+        &archive,
+        "A",
+        Some("2026-01-01T00:05:00Z"),
+        &dir.path().join("out"),
+    )
+    .expect("export");
+
+    assert_eq!(report.messages, 2);
+    assert_eq!(report.first_message_id.as_deref(), Some("m002"));
+}
+
+#[test]
+fn since_with_a_non_utc_offset_is_compared_as_an_instant() {
+    // 09:05 at +09:00 is 00:05 UTC, so only the last two messages are at or after it.
+    let messages = vec![
+        message("m001", "A", 0, "이전"),
+        message("m002", "A", 300, "경계"),
+        message("m003", "A", 3_600, "한 시간 뒤"),
+    ];
+    let (dir, archive) = archive_with(&messages);
+
+    let report = export_transcript(
+        &archive,
+        "A",
+        Some("2026-01-01T09:05:00+09:00"),
+        &dir.path().join("out"),
+    )
+    .expect("export");
+
+    assert_eq!(report.messages, 2);
+    assert_eq!(report.first_message_id.as_deref(), Some("m002"));
+}
+
+#[test]
+fn since_that_is_not_rfc3339_is_rejected_instead_of_matching_nothing() {
+    let messages = vec![message("m001", "A", 0, "메시지")];
+    let (dir, archive) = archive_with(&messages);
+    let out = dir.path().join("out");
+
+    for since in ["yesterday", "2026-01-01", "2026-01-01 00:00:00"] {
+        assert!(
+            export_transcript(&archive, "A", Some(since), &out).is_err(),
+            "{since:?} must be refused, not compared as text"
+        );
+    }
+    assert!(!out.exists(), "a refused range must write nothing");
+}

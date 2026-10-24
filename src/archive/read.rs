@@ -290,7 +290,8 @@ impl Archive {
     /// Messages of one chat in send order, optionally from `since` (RFC3339) onward.
     ///
     /// Timestamps are stored as RFC3339 text, which sorts and compares lexicographically in the
-    /// same order as the instants it encodes, so the range filter needs no conversion.
+    /// same order as the instants it encodes, so the range filter needs no conversion as long as
+    /// `since` is in the stored form (UTC, `+00:00`).
     pub fn messages_for_transcript(
         &self,
         chat_id: &str,

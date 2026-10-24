@@ -211,7 +211,8 @@ fn scan_plist_xml(xml: &str) -> (Vec<i64>, Option<String>) {
         let Some(end) = raw.find('>') else {
             continue;
         };
-        let tag = &raw[..end];
+        // Empty elements are self-closing (`<true/>`); name them like their open form.
+        let tag = raw[..end].trim_end_matches('/');
         let body = raw[end + 1..].trim();
 
         // <key>NAME</key>: the key name is the body of this fragment.
@@ -642,6 +643,22 @@ mod tests {
         let (ids, hash) = scan_plist_xml(&xml);
         assert_eq!(ids, vec![111, 222]);
         assert_eq!(hash.as_deref(), Some(active.as_str()));
+    }
+
+    #[test]
+    fn scans_active_hash_with_a_boolean_value() {
+        // `plutil -convert xml1` writes booleans as self-closing `<true/>`.
+        let active = "b".repeat(128);
+        let xml = format!(
+            "<plist><dict><key>DESIGNATEDFRIENDSREVISION:{active}</key><true/></dict></plist>"
+        );
+        let (_ids, hash) = scan_plist_xml(&xml);
+        assert_eq!(hash.as_deref(), Some(active.as_str()));
+
+        let inactive = format!(
+            "<plist><dict><key>DESIGNATEDFRIENDSREVISION:{active}</key><false/></dict></plist>"
+        );
+        assert!(scan_plist_xml(&inactive).1.is_none());
     }
 
     #[test]
