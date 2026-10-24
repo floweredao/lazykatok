@@ -1,5 +1,15 @@
 use crate::{archive::Archive, types::SearchHit, Error, Result};
 use rusqlite::params;
+use unicode_normalization::UnicodeNormalization;
+
+/// Bring a query to NFC, the form KakaoTalk stores typed text in.
+///
+/// macOS hands out NFD for file names and text copied from them, and decomposed Hangul is a
+/// different byte string from the composed syllables it draws as, so LIKE, FTS and embedding
+/// lookups all miss it.
+pub(crate) fn normalize_query(query: &str) -> String {
+    query.nfc().collect()
+}
 
 pub fn keyword_search(archive: &Archive, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
     keyword_search_with_snippet(archive, query, limit, 80)
@@ -11,6 +21,7 @@ pub fn keyword_search_with_snippet(
     limit: usize,
     snippet_length: usize,
 ) -> Result<Vec<SearchHit>> {
+    let query = &normalize_query(query);
     if query.trim().is_empty() {
         return Err(Error::EmptyQuery);
     }
@@ -44,6 +55,7 @@ pub fn bm25_search_with_snippet(
     limit: usize,
     snippet_length: usize,
 ) -> Result<Vec<SearchHit>> {
+    let query = &normalize_query(query);
     let ids = bm25_chunk_ids(archive, query, limit)?;
     hydrate_hits(archive, ids, "bm25", query, snippet_length)
 }

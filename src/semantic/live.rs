@@ -168,6 +168,7 @@ pub async fn semantic_search_live_with_config(
     config: &KatokConfig,
 ) -> Result<Vec<SearchHit>> {
     let config = &config.with_env_overrides();
+    let query = &crate::search::normalize_query(query);
     if query.trim().is_empty() {
         return Err(Error::EmptyQuery);
     }
