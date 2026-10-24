@@ -170,15 +170,16 @@ fn extract_platform_uuid(ioreg_output: &str) -> Option<String> {
     let rest = &ioreg_output[start..];
     let end = rest.find('"')?;
     let candidate = &rest[..end];
-    if candidate.len() == 36
+    is_platform_uuid(candidate).then(|| candidate.to_string())
+}
+
+/// 36 ASCII hex digits and dashes, the shape of an IOPlatformUUID. Key
+/// derivation slices the uuid by byte offset, so anything else must not reach it.
+fn is_platform_uuid(candidate: &str) -> bool {
+    candidate.len() == 36
         && candidate
             .bytes()
             .all(|b| b.is_ascii_hexdigit() || b == b'-')
-    {
-        Some(candidate.to_string())
-    } else {
-        None
-    }
 }
 
 /// Best-effort parse of a preference plist into `(candidate_user_ids,
@@ -210,7 +211,8 @@ fn scan_plist_xml(xml: &str) -> (Vec<i64>, Option<String>) {
         let Some(end) = raw.find('>') else {
             continue;
         };
-        let tag = &raw[..end];
+        // Empty elements are self-closing (`<true/>`); name them like their open form.
+        let tag = raw[..end].trim_end_matches('/');
         let body = raw[end + 1..].trim();
 
         // <key>NAME</key>: the key name is the body of this fragment.
@@ -310,7 +312,7 @@ fn read_katok_cache(path: &Path) -> Option<(i64, String)> {
         _ => return None,
     };
     let uuid = value.get("uuid")?.as_str()?.to_string();
-    if user_id > 0 && uuid.len() == 36 {
+    if user_id > 0 && is_platform_uuid(&uuid) {
         Some((user_id, uuid))
     } else {
         None
@@ -546,6 +548,24 @@ mod tests {
     }
 
     #[test]
+    fn katok_cache_with_a_non_ascii_uuid_is_ignored() {
+        // Twelve 3-byte characters are 36 bytes, the length of a real
+        // IOPlatformUUID, but byte offsets 5 and 7 fall inside a character.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let cache = dir.path().join("auth.json");
+        std::fs::write(
+            &cache,
+            r#"{"user_id": 1000000001, "uuid": "가나다라마바사아자차카타"}"#,
+        )
+        .expect("cache");
+
+        // The same steps resolve_auth takes with a cached identity.
+        let verified =
+            read_katok_cache(&cache).and_then(|(user_id, uuid)| verify(user_id, &uuid, &[]));
+        assert_eq!(verified, None);
+    }
+
+    #[test]
     fn recovers_small_user_id_via_sha512() {
         let target = {
             use sha2::{Digest, Sha512};
@@ -623,6 +643,22 @@ mod tests {
         let (ids, hash) = scan_plist_xml(&xml);
         assert_eq!(ids, vec![111, 222]);
         assert_eq!(hash.as_deref(), Some(active.as_str()));
+    }
+
+    #[test]
+    fn scans_active_hash_with_a_boolean_value() {
+        // `plutil -convert xml1` writes booleans as self-closing `<true/>`.
+        let active = "b".repeat(128);
+        let xml = format!(
+            "<plist><dict><key>DESIGNATEDFRIENDSREVISION:{active}</key><true/></dict></plist>"
+        );
+        let (_ids, hash) = scan_plist_xml(&xml);
+        assert_eq!(hash.as_deref(), Some(active.as_str()));
+
+        let inactive = format!(
+            "<plist><dict><key>DESIGNATEDFRIENDSREVISION:{active}</key><false/></dict></plist>"
+        );
+        assert!(scan_plist_xml(&inactive).1.is_none());
     }
 
     #[test]

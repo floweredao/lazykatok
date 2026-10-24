@@ -2,9 +2,11 @@
 //!
 //! These functions are a 1:1 port of the proven reference algorithm
 //! (`secure_key`, `database_name`, `hashed_device_uuid` from `kakaotalk_mac.py`,
-//! which itself mirrors kakaocli's Swift `KeyDerivation`). All string slicing is
-//! by byte offset, which is safe here because every input is ASCII (the
-//! IOPlatformUUID is hex + dashes, and `user_id` is base-10 digits).
+//! which itself mirrors kakaocli's Swift `KeyDerivation`). String slicing is by
+//! character, as in the reference, so a uuid that is short or not ASCII (a
+//! corrupt auth cache) derives a key that simply fails to open the store rather
+//! than panicking. For the normal hex-and-dash IOPlatformUUID this is the same
+//! as slicing by byte.
 
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
@@ -45,6 +47,15 @@ fn reverse_ascii(input: &str) -> String {
     input.chars().rev().collect()
 }
 
+/// `input[start..end]` by character, clamped like a Python slice.
+fn char_slice(input: &str, start: usize, end: usize) -> String {
+    input
+        .chars()
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .collect()
+}
+
 type LastDerived = std::sync::Mutex<Option<(i64, String, String)>>;
 
 /// Each derivation is 100k PBKDF2 rounds, and a watch poll asks for the same
@@ -79,16 +90,17 @@ fn derive_secure_key(user_id: i64, uuid: &str) -> String {
         &hashed,
         "|",
         "F",
-        &uuid[0..5],
+        &char_slice(uuid, 0, 5),
         "H",
         &user_id.to_string(),
         "|",
-        &uuid[7..],
+        &char_slice(uuid, 7, usize::MAX),
     ];
     let joined = parts.join("F");
     let hawawa = reverse_ascii(&joined);
-    let salt_start = (uuid.len() as f64 * 0.3) as usize;
-    let salt = &uuid[salt_start..];
+    let uuid_chars = uuid.chars().count();
+    let salt_start = (uuid_chars as f64 * 0.3) as usize;
+    let salt = char_slice(uuid, salt_start, usize::MAX);
     let derived = pbkdf2_sha256(hawawa.as_bytes(), salt.as_bytes());
     hex_lower(&derived)
 }
@@ -142,6 +154,45 @@ mod tests {
         assert!(key
             .chars()
             .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)));
+    }
+
+    #[test]
+    fn secure_key_matches_independent_synthetic_vector() {
+        // Computed with Python's hashlib.pbkdf2_hmac from synthetic inputs.
+        assert_eq!(
+            derive_secure_key(SYNTHETIC_USER_ID, SYNTHETIC_UUID),
+            concat!(
+                "30231c3546eada7fee9584912ce5fb779cf9699b3267c6910f390039ad5f0ba9",
+                "a144fc24a28375ee22c12396fc713f0b0b85a6b337d203ed64177eef9dbfbc7d",
+                "379920e8ba47ee805a1a2f5bd8e11dcd3680fa1375972596981725646f06f618",
+                "83a4bd816b3faaa062d0222707bbd4bfb6631f52ef510dca97308f116690e7a0",
+            )
+        );
+    }
+
+    #[test]
+    fn secure_key_slices_a_short_or_non_ascii_uuid_by_character() {
+        // A corrupt auth cache can hand over a uuid that is not 36 ASCII bytes.
+        // The reference slices by character and never fails; these vectors come
+        // from that algorithm in Python (`hashlib.pbkdf2_hmac`) on synthetic input.
+        assert_eq!(
+            derive_secure_key(SYNTHETIC_USER_ID, "abc"),
+            concat!(
+                "018e64d9d5a38d4e7971dc7c4305326a692c9dd61761a711e0bb056bc0832440",
+                "b967c21216b8e2fad7f1a44536acd7a7d150f44af525000066192d0a4d941881",
+                "a2d556aaa1fbb5122f6d75406fbe2d14a23f6acb454fc0f2b6342d0f267963b8",
+                "d760c7be679fc8d2d4e7d7326ac32b43b093fca264cc0c3c205e98c94fc1b650",
+            )
+        );
+        assert_eq!(
+            derive_secure_key(SYNTHETIC_USER_ID, "가나다라마바사아자차"),
+            concat!(
+                "a5c5c0097519e0ca028ef36294b78b7ccdc9f892548f65c5b2b4dcece46cda2e",
+                "146a770747065143818d5efba240b8c1a10831c5c95b7535d1daec138e64e593",
+                "eb69b13538a35470eb8305296e266e8bdc93bf91fb6ceb122533b97bf4fba884",
+                "2314b4611911f17987814d73f5fc190c3d3841e6f81b5816462c503be03e1576",
+            )
+        );
     }
 
     #[test]

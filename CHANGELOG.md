@@ -2,8 +2,55 @@
 
 ## Unreleased
 
-### Reader
+### Doctor
 
+- `doctor --json` now recommends `sync` when the archive file is missing even
+  if no semantic index was ever committed. It used to report sync as done and
+  point at `index`, which refuses to run without an archive.
+
+### Semantic search
+
+- `KATOK_EMBED_URL` no longer switches to the HTTP embedder when `katok.toml`
+  sets `embedder_provider` to `mock` or `local-test`. Only `KATOK_EMBEDDER`
+  was checked, so an endpoint exported in the environment overrode an offline
+  provider chosen in the config file and sent archive text to that endpoint.
+
+### Config
+
+- A `semantic_dir` in `katok.toml` that resolves to the data directory or one
+  of its ancestors (`""`, `"."`, `".."`, or such an absolute path) is now
+  refused as an invalid semantic path. `wipe-index --yes` removes the semantic
+  directory recursively, so it used to delete the archive along with the index.
+
+### Search
+
+- `search hybrid` gives every window a BM25 chunk spans that chunk's rank. A
+  chunk cut across a window boundary used to rank its second window one place
+  lower and push every later BM25 window down by one, so semantic hits beat
+  windows they should have tied or lost to.
+
+### Media
+
+- Added `--allow-unverified-photos` to `media get` and `media backfill`. A
+  photo whose attachment carries no `cs` fingerprint is then stored from the
+  CDN when the body matches the declared size and is a JPEG, PNG, GIF, or WebP
+  image, recorded as `cdn-fetched-unverified`. Without the flag such photos are
+  still refused as `cdn-unverifiable`, and videos and files without `cs` are
+  refused either way.
+- A file attachment name is now normalized to NFC after invisible characters
+  are stripped rather than before. An invisible character between a letter and
+  its combining part used to leave the saved name decomposed, so it differed in
+  bytes from the same name typed normally.
+
+### Reading
+
+- A group room whose display-member list holds a negative member id keeps its
+  reconstructed name. The binary plist reader refused 8-byte integers with the
+  high bit set, which is how the format stores a negative value, and dropped
+  the whole list.
+- Deriving the store key no longer panics on a cached uuid that is not ASCII.
+  Such a uuid now derives a key that fails verification like any other wrong
+  uuid, and resolution moves on to the next candidate.
 - A message whose `supplement` or `attachment` column holds a value that is not
   readable as text is now read without its reply link instead of being dropped.
   Dropping it also let `sync --prune-deleted` delete the archived copy as if the
@@ -18,14 +65,12 @@
   `~/Library/Application Support` won every message they shared. When that copy
   was the stale one, messages edited since the move showed their old text.
 
-### Media
+### Sync
 
-- Added `--allow-unverified-photos` to `media get` and `media backfill`. A
-  photo whose attachment carries no `cs` fingerprint is then stored from the
-  CDN when the body matches the declared size and is a JPEG, PNG, GIF, or WebP
-  image, recorded as `cdn-fetched-unverified`. Without the flag such photos are
-  still refused as `cdn-unverifiable`, and videos and files without `cs` are
-  refused either way.
+- `sync --prune-preview` and `sync --prune-deleted` list messages in a fixed
+  order, by account, chat, and message id. The order used to change from one
+  run to the next, so two previews of the same state, or a preview and the
+  deletion that followed it, did not read the same.
 
 ### Watch
 
@@ -39,6 +84,21 @@
   backwards as a result of syncing an edit to an older message.
 - The store key and database name are derived once per account instead of
   three times per read; each derivation is 100k PBKDF2 rounds.
+- In `watch --reply`, a line that starts with an unknown slash command (a typo
+  such as `/sned`, or `/send` with no space after it) is still not sent, but
+  it now stays in the input box instead of being cleared.
+- Pasting into the reply input turns tabs into spaces, as it already did for
+  newlines. Tabs used to be dropped, which joined the words on either side.
+
+### Chunking
+
+- A chunk now ends where the sender changes even when the next sender shows
+  the same nickname, or no nickname at all. Two members sharing a display name
+  used to land in one chunk filed under whichever spoke first. The chunker
+  version is bumped, so the next sync rebuilds every room once.
+- `chunks` and `chunk context` keep chunks that start in the same second in
+  reading order. They were tie-broken by chunk id, a hash, so in a busy room
+  the list came out shuffled and `chunk context` could skip a neighbour.
 
 ## 0.3.3
 
