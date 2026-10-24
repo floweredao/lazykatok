@@ -38,6 +38,7 @@ pub async fn hybrid_search_with_config(
     limit: usize,
     config: &KatokConfig,
 ) -> Result<Vec<SearchHit>> {
+    let query = &crate::search::normalize_query(query);
     if query.trim().is_empty() {
         return Err(Error::EmptyQuery);
     }
