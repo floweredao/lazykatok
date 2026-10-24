@@ -11,6 +11,13 @@
   still refused as `cdn-unverifiable`, and videos and files without `cs` are
   refused either way.
 
+### Sync
+
+- `sync --prune-preview` and `sync --prune-deleted` list messages in a fixed
+  order, by account, chat, and message id. The order used to change from one
+  run to the next, so two previews of the same state, or a preview and the
+  deletion that followed it, did not read the same.
+
 ### Watch
 
 - `watch` no longer re-reads the macOS store on a poll when none of its
