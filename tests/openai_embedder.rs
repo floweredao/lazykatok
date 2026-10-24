@@ -19,6 +19,8 @@ struct ServerState {
     auth_headers: Mutex<Vec<String>>,
     inputs: Mutex<Vec<String>>,
     requests: AtomicUsize,
+    /// Answer 500 to every request once this many have succeeded; 0 never fails.
+    fail_after: AtomicUsize,
 }
 
 struct MockEmbeddingServer {
@@ -107,6 +109,14 @@ fn handle_connection(mut stream: TcpStream, state: Arc<ServerState>) {
         })
         .unwrap_or_default();
 
+    let fail_after = state.fail_after.load(Ordering::SeqCst);
+    if fail_after > 0 && state.requests.load(Ordering::SeqCst) >= fail_after {
+        let _ = stream.write_all(
+            b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        let _ = stream.flush();
+        return;
+    }
     state.requests.fetch_add(1, Ordering::SeqCst);
     state
         .inputs
@@ -404,4 +414,156 @@ fn query_and_passage_prefixes_are_sent_to_the_endpoint() {
         inputs.iter().any(|input| input.starts_with("query: ")),
         "the search query carried no query prefix: {inputs:?}"
     );
+}
+
+#[test]
+fn changing_the_passage_prefix_re_embeds_instead_of_reusing_old_vectors() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let data_dir = dir.path().join("data");
+    let plain = dir.path().join("plain.toml");
+    std::fs::write(&plain, "").expect("write plain config");
+    let prefixed = dir.path().join("prefixed.toml");
+    std::fs::write(&prefixed, "passage_prefix = \"passage: \"\n").expect("write prefixed config");
+    let server = MockEmbeddingServer::start();
+
+    let sync_output = cli()
+        .args([
+            "--data-dir",
+            data_dir.to_str().expect("utf8 data dir"),
+            "sync",
+            "--source",
+            "fixture",
+            fixture("replies.jsonl").to_str().expect("utf8 fixture"),
+            "--json",
+        ])
+        .output()
+        .expect("run sync");
+    assert!(sync_output.status.success());
+
+    let index_with = |config: &std::path::Path| {
+        let mut index = cli();
+        configure_http_embedder(&mut index, &server);
+        let output = index
+            .args([
+                "--config",
+                config.to_str().expect("utf8 config"),
+                "--data-dir",
+                data_dir.to_str().expect("utf8 data dir"),
+                "index",
+                "--json",
+            ])
+            .output()
+            .expect("run index");
+        assert!(
+            output.status.success(),
+            "index failed: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        stdout_json(&output)
+    };
+
+    let first = index_with(&plain);
+    assert_eq!(first["embedded_texts"].as_u64(), Some(1));
+    assert!(server
+        .seen_inputs()
+        .iter()
+        .all(|input| !input.starts_with("passage: ")));
+
+    // Every stored vector was embedded without the prefix, so none of them is
+    // what the endpoint returns for the same passage once the prefix is set.
+    let second = index_with(&prefixed);
+    assert_eq!(second["reused_vectors"].as_u64(), Some(0));
+    assert_eq!(second["embedded_texts"].as_u64(), Some(1));
+    assert!(server
+        .seen_inputs()
+        .iter()
+        .any(|input| input.starts_with("passage: ")));
+
+    let third = index_with(&prefixed);
+    assert_eq!(third["embedded_texts"].as_u64(), Some(0));
+    assert_eq!(third["reused_vectors"].as_u64(), Some(1));
+}
+
+#[test]
+fn an_index_that_fails_partway_resumes_without_re_embedding_finished_batches() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let data_dir = dir.path().join("data");
+    let config = dir.path().join("katok.toml");
+    std::fs::write(&config, "embedding_batch_size = 1\n").expect("write config");
+    // One parent window per room, so each window is its own embedding request.
+    let rooms = dir.path().join("rooms.jsonl");
+    let rows = (0..6)
+        .map(|room| {
+            format!(
+                "{{\"account_hash\":\"acct-synthetic\",\"chat_id\":\"chat-{room}\",\"chat_name\":\"Synthetic Room {room}\",\"chat_type\":\"group\",\"message_id\":\"m-{room}\",\"sender_id\":\"u1\",\"sender_nickname\":\"Tester\",\"timestamp\":\"2026-01-01T09:0{room}:00Z\",\"text\":\"synthetic resume material {room}\",\"message_type\":\"text\",\"reply_to_message_id\":null}}\n"
+            )
+        })
+        .collect::<String>();
+    std::fs::write(&rooms, rows).expect("write fixture");
+    let server = MockEmbeddingServer::start();
+
+    let sync_output = cli()
+        .args([
+            "--data-dir",
+            data_dir.to_str().expect("utf8 data dir"),
+            "sync",
+            "--source",
+            "fixture",
+            rooms.to_str().expect("utf8 fixture"),
+            "--json",
+        ])
+        .output()
+        .expect("run sync");
+    assert!(sync_output.status.success());
+
+    let index = || {
+        let mut index = cli();
+        configure_http_embedder(&mut index, &server);
+        index
+            .args([
+                "--config",
+                config.to_str().expect("utf8 config"),
+                "--data-dir",
+                data_dir.to_str().expect("utf8 data dir"),
+                "index",
+                "--json",
+            ])
+            .output()
+            .expect("run index")
+    };
+
+    server.state.fail_after.store(4, Ordering::SeqCst);
+    let failed = index();
+    assert!(!failed.status.success(), "the endpoint failed mid-index");
+    assert!(!data_dir.join("semantic/CURRENT").exists());
+    assert_eq!(server.request_count(), 4);
+    // What is kept for the next run is vectors, not another copy of the chat text.
+    for entry in std::fs::read_dir(data_dir.join("semantic/generations")).expect("generations") {
+        let path = entry.expect("generation entry").path();
+        assert!(
+            !path.join("source").exists(),
+            "{} kept chat text",
+            path.display()
+        );
+    }
+
+    server.state.fail_after.store(0, Ordering::SeqCst);
+    let resumed = index();
+    assert!(
+        resumed.status.success(),
+        "index failed: {}",
+        String::from_utf8_lossy(&resumed.stdout)
+    );
+    let report = stdout_json(&resumed);
+    assert_eq!(report["written_documents"].as_u64(), Some(6));
+    assert_eq!(report["reused_vectors"].as_u64(), Some(4));
+    assert_eq!(report["embedded_texts"].as_u64(), Some(2));
+    assert_eq!(server.request_count(), 6);
+
+    // The interrupted run's leftovers go once a generation is committed.
+    let generations = std::fs::read_dir(data_dir.join("semantic/generations"))
+        .expect("generation directory")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("generation entries");
+    assert_eq!(generations.len(), 1);
 }
