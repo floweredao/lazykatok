@@ -10,6 +10,20 @@
   image, recorded as `cdn-fetched-unverified`. Without the flag such photos are
   still refused as `cdn-unverifiable`, and videos and files without `cs` are
   refused either way.
+- A file attachment name is now normalized to NFC after invisible characters
+  are stripped rather than before. An invisible character between a letter and
+  its combining part used to leave the saved name decomposed, so it differed in
+  bytes from the same name typed normally.
+
+### Reading
+
+- A group room whose display-member list holds a negative member id keeps its
+  reconstructed name. The binary plist reader refused 8-byte integers with the
+  high bit set, which is how the format stores a negative value, and dropped
+  the whole list.
+- Deriving the store key no longer panics on a cached uuid that is not ASCII.
+  Such a uuid now derives a key that fails verification like any other wrong
+  uuid, and resolution moves on to the next candidate.
 
 ### Sync
 
