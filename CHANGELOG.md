@@ -30,6 +30,11 @@
   backwards as a result of syncing an edit to an older message.
 - The store key and database name are derived once per account instead of
   three times per read; each derivation is 100k PBKDF2 rounds.
+- In `watch --reply`, a line that starts with an unknown slash command (a typo
+  such as `/sned`, or `/send` with no space after it) is still not sent, but
+  it now stays in the input box instead of being cleared.
+- Pasting into the reply input turns tabs into spaces, as it already did for
+  newlines. Tabs used to be dropped, which joined the words on either side.
 
 ### Chunking
 
