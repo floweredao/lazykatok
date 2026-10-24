@@ -26,6 +26,8 @@
 - In `watch --reply`, a line that starts with an unknown slash command (a typo
   such as `/sned`, or `/send` with no space after it) is still not sent, but
   it now stays in the input box instead of being cleared.
+- Pasting into the reply input turns tabs into spaces, as it already did for
+  newlines. Tabs used to be dropped, which joined the words on either side.
 
 ## 0.3.3
 
