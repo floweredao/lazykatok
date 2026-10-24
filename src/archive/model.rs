@@ -35,6 +35,7 @@ pub struct StoredMessage {
     pub timestamp: String,
     pub text: String,
     pub message_type: String,
+    pub sender_id: String,
 }
 
 impl StoredMessage {
@@ -49,6 +50,7 @@ impl StoredMessage {
             timestamp: row.get(6)?,
             text: row.get(7)?,
             message_type: row.get(8)?,
+            sender_id: row.get(9)?,
         })
     }
 }

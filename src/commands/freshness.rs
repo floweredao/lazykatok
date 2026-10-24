@@ -125,6 +125,13 @@ fn recommendation(
     if base.sync_before_search {
         return base;
     }
+    if !archive_path.is_file() {
+        return FreshnessRecommendation {
+            sync_before_search: true,
+            index_before_semantic_search: true,
+            reason: "archive is missing; run katok sync --source macos --json, then katok index --json before search".to_string(),
+        };
+    }
     if let Some(error) = committed_error {
         return FreshnessRecommendation {
             sync_before_search: false,
@@ -136,13 +143,6 @@ fn recommendation(
     }
     if status.last_index.is_none() {
         return base;
-    }
-    if !archive_path.is_file() {
-        return FreshnessRecommendation {
-            sync_before_search: true,
-            index_before_semantic_search: true,
-            reason: "archive is missing; run katok sync --source macos --json, then katok index --json before search".to_string(),
-        };
     }
     let current_revision = lazykatok::archive::Archive::open(archive_path)
         .and_then(|archive| lazykatok::semantic::archive_revision(&archive));

@@ -39,7 +39,9 @@ impl Default for ChunkSettings {
 ///
 /// 2: `parent_id` now includes the segment ordinal (see `parent.rs`), so parents
 /// cut from one oversized chunk stop colliding.
-pub const CHUNKER_VERSION: i64 = 2;
+/// 3: a run also ends where `sender_id` changes, so senders sharing a nickname
+/// stop sharing a chunk.
+pub const CHUNKER_VERSION: i64 = 3;
 
 pub fn rebuild_chunks(archive: &Archive) -> Result<usize> {
     rebuild_chunks_with_settings(archive, ChunkSettings::default())
@@ -126,8 +128,12 @@ fn should_start_new_chunk(
     // cost `idx_messages_chat_timestamp`, and with it the tail-scoped read that
     // keeps an incremental sync off the full table. Two accounts therefore chunk
     // more finely than one would, which is correct output, not wrong output.
+    // `sender_id` as well as the nickname: display names are not unique in a
+    // group, and a source with no name for a sender leaves it empty, so two
+    // people sharing one would otherwise be filed as a single author's run.
     if previous.account_hash != next.account_hash
         || previous.chat_id != next.chat_id
+        || previous.sender_id != next.sender_id
         || previous.sender_nickname != next.sender_nickname
     {
         return Ok(true);

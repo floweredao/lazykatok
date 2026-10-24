@@ -3,6 +3,7 @@ use crate::{
     Result,
 };
 use sha2::{Digest, Sha256};
+use unicode_segmentation::UnicodeSegmentation;
 
 pub const DEFAULT_PARENT_WINDOW_SECONDS: i64 = 300;
 pub const DEFAULT_PARENT_WINDOW_MAX_CHARS: usize = 3_000;
@@ -62,6 +63,7 @@ fn parent_segments_from_chunks(chunks: &[ChunkDraft]) -> Result<Vec<ParentChunkD
     for chunk in chunks {
         let line = parent_line(chunk);
         let chars = line.chars().collect::<Vec<_>>();
+        let boundaries = grapheme_boundaries(&line, chars.len());
         let mut offset = 0;
         // Only the segment that first receives a chunk counts its messages; the
         // continuations are the same chunk spilling over a character limit.
@@ -81,13 +83,27 @@ fn parent_segments_from_chunks(chunks: &[ChunkDraft]) -> Result<Vec<ParentChunkD
                     segment.text.push('\n');
                 }
             }
-            let take = segment.remaining().min(chars.len() - offset);
+            let mut take = segment.remaining().min(chars.len() - offset);
+            // End the segment on a grapheme boundary, so a flag, a ZWJ emoji or a decomposed
+            // Hangul syllable is not split across two windows. A cluster longer than a whole
+            // window is still cut.
+            let cut = (offset + 1..=offset + take)
+                .rev()
+                .find(|end| boundaries[*end])
+                .unwrap_or(offset + take);
+            let backed_off = cut < offset + take;
+            take = cut - offset;
             for ch in &chars[offset..offset + take] {
                 segment.text.push(*ch);
             }
             segment.add_child(chunk, !counted);
             counted = true;
             offset += take;
+            if backed_off {
+                segments.push(segment.into_draft()?);
+                ordinal += 1;
+                segment = ParentSegment::new(chunk, ordinal);
+            }
         }
     }
 
@@ -95,6 +111,18 @@ fn parent_segments_from_chunks(chunks: &[ChunkDraft]) -> Result<Vec<ParentChunkD
         segments.push(segment.into_draft()?);
     }
     Ok(segments)
+}
+
+/// `boundaries[i]` is true when char index `i` of `line` starts a grapheme cluster or is the end.
+fn grapheme_boundaries(line: &str, char_count: usize) -> Vec<bool> {
+    let mut boundaries = vec![false; char_count + 1];
+    let mut index = 0;
+    for grapheme in line.graphemes(true) {
+        boundaries[index] = true;
+        index += grapheme.chars().count();
+    }
+    boundaries[char_count] = true;
+    boundaries
 }
 
 fn parent_line(chunk: &ChunkDraft) -> String {
