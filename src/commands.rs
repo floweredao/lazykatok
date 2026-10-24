@@ -1520,8 +1520,10 @@ where
             "lazykatok: Enter send; Left/Right/Home/End or Ctrl-A/B/E/F move; Backspace/Delete, Ctrl-W/U/K edit; Up/Down/PgUp/PgDn scroll; Ctrl-C/Ctrl-D or /quit quit".to_string(),
         )?,
         ReplyCommand::Empty => {}
-        ReplyCommand::Ignored => terminal
-            .render_system("lazykatok: not sent; unknown slash command".to_string())?,
+        ReplyCommand::Ignored => {
+            terminal.restore_draft(&line)?;
+            terminal.render_system("lazykatok: not sent; unknown slash command".to_string())?;
+        }
     }
     Ok(false)
 }
@@ -2182,6 +2184,38 @@ mod reply_terminal_tests {
             [
                 "lazykatok: 전송 중…",
                 "lazykatok: 이전 전송이 끝나기를 기다리는 중입니다"
+            ]
+        );
+    }
+
+    #[test]
+    fn reply_unknown_slash_command_keeps_the_draft_instead_of_discarding_it() {
+        let mut state = ReplyUiState::default();
+        let mut sends = ReplySendState::new();
+        let call_count = Rc::new(Cell::new(0));
+        let counted = Rc::clone(&call_count);
+        let mut sender = move |_request: ReplySendRequest| counted.set(counted.get() + 1);
+
+        for line in ["/sned 내일 3시에 봐요", "/send내일 3시에 봐요"] {
+            process_reply_action(
+                &mut state,
+                ReplyTerminalAction::Submit(line.to_string()),
+                Some("chat-synthetic-1"),
+                false,
+                Path::new("/tmp/lazykatok-synthetic"),
+                &mut sends,
+                &mut sender,
+            )
+            .expect("reject unknown slash command");
+
+            assert_eq!(call_count.get(), 0);
+            assert_eq!(state.take_draft(), line, "the typed line is not lost");
+        }
+        assert_eq!(
+            system_lines(&mut state),
+            [
+                "lazykatok: not sent; unknown slash command",
+                "lazykatok: not sent; unknown slash command"
             ]
         );
     }
