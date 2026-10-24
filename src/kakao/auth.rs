@@ -170,15 +170,16 @@ fn extract_platform_uuid(ioreg_output: &str) -> Option<String> {
     let rest = &ioreg_output[start..];
     let end = rest.find('"')?;
     let candidate = &rest[..end];
-    if candidate.len() == 36
+    is_platform_uuid(candidate).then(|| candidate.to_string())
+}
+
+/// 36 ASCII hex digits and dashes, the shape of an IOPlatformUUID. Key
+/// derivation slices the uuid by byte offset, so anything else must not reach it.
+fn is_platform_uuid(candidate: &str) -> bool {
+    candidate.len() == 36
         && candidate
             .bytes()
             .all(|b| b.is_ascii_hexdigit() || b == b'-')
-    {
-        Some(candidate.to_string())
-    } else {
-        None
-    }
 }
 
 /// Best-effort parse of a preference plist into `(candidate_user_ids,
@@ -310,7 +311,7 @@ fn read_katok_cache(path: &Path) -> Option<(i64, String)> {
         _ => return None,
     };
     let uuid = value.get("uuid")?.as_str()?.to_string();
-    if user_id > 0 && uuid.len() == 36 {
+    if user_id > 0 && is_platform_uuid(&uuid) {
         Some((user_id, uuid))
     } else {
         None
@@ -543,6 +544,24 @@ mod tests {
             extract_platform_uuid(sample).as_deref(),
             Some("00000000-1111-2222-3333-444444444444")
         );
+    }
+
+    #[test]
+    fn katok_cache_with_a_non_ascii_uuid_is_ignored() {
+        // Twelve 3-byte characters are 36 bytes, the length of a real
+        // IOPlatformUUID, but byte offsets 5 and 7 fall inside a character.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let cache = dir.path().join("auth.json");
+        std::fs::write(
+            &cache,
+            r#"{"user_id": 1000000001, "uuid": "가나다라마바사아자차카타"}"#,
+        )
+        .expect("cache");
+
+        // The same steps resolve_auth takes with a cached identity.
+        let verified =
+            read_katok_cache(&cache).and_then(|(user_id, uuid)| verify(user_id, &uuid, &[]));
+        assert_eq!(verified, None);
     }
 
     #[test]
