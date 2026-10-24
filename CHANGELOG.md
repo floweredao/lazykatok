@@ -51,6 +51,19 @@
 - Deriving the store key no longer panics on a cached uuid that is not ASCII.
   Such a uuid now derives a key that fails verification like any other wrong
   uuid, and resolution moves on to the next candidate.
+- A message whose `supplement` or `attachment` column holds a value that is not
+  readable as text is now read without its reply link instead of being dropped.
+  Dropping it also let `sync --prune-deleted` delete the archived copy as if the
+  message had been deleted in KakaoTalk.
+- A message row with no usable `sentAt` (NULL, `0`, or not a number) is now
+  skipped and counted with the unreadable rows instead of being archived as sent
+  on 1970-01-01. That date widened the range `sync --prune-deleted` trusts for
+  the chat back to 1970, so it deleted archived messages KakaoTalk had pruned.
+- When the store exists as `<name>` in one root and `<name>.db` in the other,
+  only the more recently modified copy is read, as already happens for two copies
+  under the same name. Both used to be read, and the copy in
+  `~/Library/Application Support` won every message they shared. When that copy
+  was the stale one, messages edited since the move showed their old text.
 
 ### Sync
 
