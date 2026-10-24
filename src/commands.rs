@@ -76,6 +76,7 @@ const REPLY_INPUT_BATCH_LIMIT: Duration = Duration::from_millis(8);
 const REPLY_INPUT_EVENT_LIMIT: usize = 256;
 const REPLY_PUMP_SLICE: Duration = Duration::from_millis(16);
 // Reply Enter is explicit intent, so do not inherit the measured 15-second focus-wait default.
+#[cfg(all(target_os = "macos", feature = "private-send"))]
 const REPLY_FOCUS_WAIT_SECS: u64 = 2;
 
 #[derive(Debug)]
