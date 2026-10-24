@@ -682,6 +682,16 @@ impl Archive {
                 }
             }
         }
+        // `spans` iterates in hash order, which changes from run to run. Without a sort the
+        // same source and archive reported the same deletions in a different order each time,
+        // so a preview could not be compared line for line with the apply that followed it.
+        doomed.sort_by(|a, b| {
+            (&a.account_hash, &a.chat_id, &a.message_id).cmp(&(
+                &b.account_hash,
+                &b.chat_id,
+                &b.message_id,
+            ))
+        });
 
         if apply {
             for victim in &doomed {
