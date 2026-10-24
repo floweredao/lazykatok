@@ -179,9 +179,17 @@ impl Archive {
             if seen_chats.insert(message.chat_id.as_str()) {
                 self.upsert_chat(message)?;
             }
-            let change = self.upsert_message(message)?;
+            let (change, stored_timestamp) = self.upsert_message(message)?;
             if change != MessageChange::Unchanged {
-                let key = (message.timestamp.to_rfc3339(), message.message_id.as_str());
+                // An update can move a message; the chunk it left is stale too, so the change
+                // lands at whichever of the old and new positions comes first.
+                let mut timestamp = message.timestamp.to_rfc3339();
+                if let Some(stored) = stored_timestamp {
+                    if stored < timestamp {
+                        timestamp = stored;
+                    }
+                }
+                let key = (timestamp, message.message_id.as_str());
                 earliest_changed
                     .entry(message.chat_id.as_str())
                     .and_modify(|earliest| {
@@ -353,8 +361,9 @@ impl Archive {
         Ok(())
     }
 
-    fn upsert_message(&self, message: &RawMessage) -> Result<MessageChange> {
-        let exists = self.message_exists(message)?;
+    /// Upsert one message, returning what changed and the timestamp it was stored under before.
+    fn upsert_message(&self, message: &RawMessage) -> Result<(MessageChange, Option<String>)> {
+        let stored_timestamp = self.stored_timestamp(message)?;
         let changed = self
             .conn
             .prepare_cached(
@@ -395,26 +404,26 @@ impl Archive {
                 message.reply_to_message_id
             ])
             .map_err(Error::Sql)?;
-        Ok(match (exists, changed) {
+        let change = match (stored_timestamp.is_some(), changed) {
             (false, 1) => MessageChange::Inserted,
             (true, 1) => MessageChange::Updated,
             _ => MessageChange::Unchanged,
-        })
+        };
+        Ok((change, stored_timestamp))
     }
 
-    fn message_exists(&self, message: &RawMessage) -> Result<bool> {
+    fn stored_timestamp(&self, message: &RawMessage) -> Result<Option<String>> {
         self.conn
             .prepare_cached(
-                "SELECT EXISTS(
-                    SELECT 1 FROM messages
-                    WHERE account_hash = ?1 AND chat_id = ?2 AND message_id = ?3
-                 )",
+                "SELECT timestamp FROM messages
+                 WHERE account_hash = ?1 AND chat_id = ?2 AND message_id = ?3",
             )
             .map_err(Error::Sql)?
             .query_row(
                 params![message.account_hash, message.chat_id, message.message_id],
                 |row| row.get(0),
             )
+            .optional()
             .map_err(Error::Sql)
     }
 
@@ -700,6 +709,22 @@ impl Archive {
                         "DELETE FROM messages
                          WHERE account_hash = ?1 AND chat_id = ?2 AND message_id = ?3",
                         params![victim.account_hash, victim.chat_id, victim.message_id],
+                    )
+                    .map_err(Error::Sql)?;
+            }
+            // The scoped ref rebuild reaches a chat's edges through the messages that still
+            // exist, so it cannot see the edge of a reply that was just removed. Drop every edge
+            // whose child is no longer a stored reply, which is the set a full rebuild would
+            // never have written. The subquery is served by the partial `idx_messages_reply_to`.
+            if !doomed.is_empty() {
+                self.conn
+                    .execute(
+                        "DELETE FROM reply_edges
+                         WHERE child_message_id NOT IN (
+                            SELECT message_id FROM messages
+                            WHERE reply_to_message_id IS NOT NULL
+                         )",
+                        [],
                     )
                     .map_err(Error::Sql)?;
             }

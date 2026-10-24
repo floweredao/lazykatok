@@ -144,11 +144,16 @@ impl Archive {
     /// so in a room being typed in right now its idea of "last message" is stale
     /// within a minute, while the ordering only changes if a *different*
     /// same-named room overtakes it.
+    ///
+    /// Names come from `chats`, which every sync overwrites with what the source
+    /// reports now. `messages.chat_name` cannot stand in for it: a row the source
+    /// has pruned is never rewritten, so after a rename the archive still holds
+    /// the old name on a room's older messages.
     pub fn chat_identity(&self, chat_id: &str) -> Result<Option<(String, usize)>> {
         let Some(name): Option<String> = self
             .conn
             .query_row(
-                "SELECT chat_name FROM messages WHERE chat_id = ?1 LIMIT 1",
+                "SELECT chat_name FROM chats WHERE chat_id = ?1",
                 [chat_id],
                 |row| row.get(0),
             )
@@ -160,12 +165,11 @@ impl Archive {
         let rank: i64 = self
             .conn
             .query_row(
-                "SELECT COUNT(*) FROM (
-                     SELECT chat_id, MAX(timestamp) AS last FROM messages
-                     WHERE chat_name = ?1 GROUP BY chat_id
-                 ) peers
-                 WHERE peers.chat_id <> ?2
-                   AND peers.last > (SELECT MAX(timestamp) FROM messages WHERE chat_id = ?2)",
+                "SELECT COUNT(*) FROM chats peer
+                 WHERE peer.chat_name = ?1
+                   AND peer.chat_id <> ?2
+                   AND (SELECT MAX(timestamp) FROM messages WHERE chat_id = peer.chat_id)
+                     > (SELECT MAX(timestamp) FROM messages WHERE chat_id = ?2)",
                 params![name, chat_id],
                 |row| row.get(0),
             )
