@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### Doctor
+
+- `doctor --json` now recommends `sync` when the archive file is missing even
+  if no semantic index was ever committed. It used to report sync as done and
+  point at `index`, which refuses to run without an archive.
+
+### Semantic search
+
+- `KATOK_EMBED_URL` no longer switches to the HTTP embedder when `katok.toml`
+  sets `embedder_provider` to `mock` or `local-test`. Only `KATOK_EMBEDDER`
+  was checked, so an endpoint exported in the environment overrode an offline
+  provider chosen in the config file and sent archive text to that endpoint.
+
+### Config
+
+- A `semantic_dir` in `katok.toml` that resolves to the data directory or one
+  of its ancestors (`""`, `"."`, `".."`, or such an absolute path) is now
+  refused as an invalid semantic path. `wipe-index --yes` removes the semantic
+  directory recursively, so it used to delete the archive along with the index.
+
+### Search
+
+- `search hybrid` gives every window a BM25 chunk spans that chunk's rank. A
+  chunk cut across a window boundary used to rank its second window one place
+  lower and push every later BM25 window down by one, so semantic hits beat
+  windows they should have tied or lost to.
+
 ### Media
 
 - Added `--allow-unverified-photos` to `media get` and `media backfill`. A
