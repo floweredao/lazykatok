@@ -14,6 +14,18 @@
   sets `embedder_provider` to `mock` or `local-test`. Only `KATOK_EMBEDDER`
   was checked, so an endpoint exported in the environment overrode an offline
   provider chosen in the config file and sent archive text to that endpoint.
+- Changing `passage_prefix` for the OpenAI-compatible embedder now re-embeds
+  on the next `index`. The vectors were recorded under `openai/<model>`
+  whatever the prefix, so a plain `index` kept reusing vectors embedded with
+  the old prefix until `--full`. With a prefix set, the id becomes
+  `openai/<model>+passage-prefix-<hash>`; without one it is unchanged, so
+  existing indexes keep their vectors.
+- An `index` run that fails or is interrupted while embedding no longer throws
+  away the vectors it already stored. The next `index` (without `--full`)
+  reuses them, so a remote embedder that errors near the end of a large
+  archive costs only the texts not yet embedded. The failed run's copy of the
+  chat text is removed straight away; its vectors are removed once a
+  generation is committed.
 
 ### Config
 
@@ -41,6 +53,11 @@
   are stripped rather than before. An invisible character between a letter and
   its combining part used to leave the saved name decomposed, so it differed in
   bytes from the same name typed normally.
+- `media backfill --dry-run` no longer writes files. A photo or video served
+  from the local KakaoTalk cache (full image or thumbnail) used to be
+  decrypted and saved, creating the output directory, even though the dry run
+  promises to write nothing. It is now decrypted only to prove it can be and
+  reported as `full-would-decrypt` or `thumb-would-decrypt` with no path.
 
 ### Reading
 

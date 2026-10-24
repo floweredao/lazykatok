@@ -20,6 +20,11 @@ use super::{
 
 pub const STORE_DIR: &str = "store";
 
+/// Written into a staging generation before any vector is embedded. A staging
+/// dir left behind by a failed or interrupted run keeps the vectors it already
+/// stored, and the next run reuses them when this records the same embedder.
+const RESUME_FILE: &str = "resume.json";
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SemanticIndexReport {
     pub written_documents: usize,
@@ -32,6 +37,12 @@ pub struct SemanticIndexReport {
     pub reused_vectors: usize,
     pub self_healed: bool,
     pub cleanup_warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct ResumeMarker {
+    embedder_id: String,
+    dimension: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,7 +98,7 @@ pub async fn index_semantic_live_for_parents(
     let mut embedder = create_embedder(config)?;
     let prior_generation = current_generation(root);
     let mut self_healed = false;
-    let prior_vectors = if full {
+    let mut prior_vectors = if full {
         HashMap::new()
     } else {
         match prior_generation {
@@ -118,6 +129,15 @@ pub async fn index_semantic_live_for_parents(
             Err(error) => return Err(error),
         }
     };
+    if !full {
+        prior_vectors.extend(load_resumable_vectors(
+            root,
+            &staging,
+            embedder.id(),
+            config.vector_dimension,
+        ));
+    }
+    save_resume_marker(&staging, embedder.id(), config.vector_dimension)?;
     let mut pending = Vec::new();
     let mut reused_vectors = 0usize;
 
@@ -133,7 +153,18 @@ pub async fn index_semantic_live_for_parents(
 
     let embedded_texts = pending.len();
     let batch_size = config.embedding_batch_size.max(1);
-    let embedding_calls = embed_pending(&store, &mut *embedder, &pending, batch_size)?;
+    let embedding_calls = match embed_pending(&store, &mut *embedder, &pending, batch_size) {
+        Ok(calls) => calls,
+        Err(error) => {
+            // Keep what was embedded so far for the next run to resume from.
+            // Only the vectors are needed for that, so the chat text goes now.
+            staging_guard.disarm();
+            if let Some(source) = super::semantic_source_dir(&staging).parent() {
+                let _ = std::fs::remove_dir_all(source);
+            }
+            return Err(error);
+        }
+    };
     save_cursor(&staging, &revision, embedder.id(), embedded_texts)?;
     validate_generation(archive, &staging, embedder.id(), config.vector_dimension)?;
 
@@ -287,6 +318,54 @@ fn load_reusable_vectors(
     let store =
         LocalVectorStore::open_existing(&generation.join(STORE_DIR), usize::from(dimension))?;
     Ok((cursor, store.stored_vectors()?))
+}
+
+/// Vectors stored by earlier runs that stopped before committing, keyed by
+/// chunk id. Each is reused only when its content hash still matches, like a
+/// committed vector; a leftover that cannot be read is skipped, not fatal.
+fn load_resumable_vectors(
+    root: &Path,
+    own_staging: &Path,
+    embedder_id: &str,
+    dimension: u16,
+) -> HashMap<String, StoredVector> {
+    let expected = ResumeMarker {
+        embedder_id: embedder_id.to_string(),
+        dimension,
+    };
+    let mut vectors = HashMap::new();
+    let Ok(entries) = std::fs::read_dir(root.join(GENERATIONS_DIR)) else {
+        return vectors;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if path == own_staging || !name.starts_with('.') || !name.ends_with(".staging") {
+            continue;
+        }
+        let marker = std::fs::read(path.join(RESUME_FILE))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<ResumeMarker>(&bytes).ok());
+        if marker.as_ref() != Some(&expected) {
+            continue;
+        }
+        let stored = LocalVectorStore::open_existing(&path.join(STORE_DIR), usize::from(dimension))
+            .and_then(|store| store.stored_vectors());
+        if let Ok(stored) = stored {
+            vectors.extend(stored);
+        }
+    }
+    vectors
+}
+
+fn save_resume_marker(dir: &Path, embedder_id: &str, dimension: u16) -> Result<()> {
+    let marker = ResumeMarker {
+        embedder_id: embedder_id.to_string(),
+        dimension,
+    };
+    let json = serde_json::to_vec_pretty(&marker).map_err(Error::Json)?;
+    std::fs::write(dir.join(RESUME_FILE), json).map_err(Error::Io)
 }
 
 fn expected_content_pairs(parents: &[ParentChunk]) -> Vec<(String, String)> {
