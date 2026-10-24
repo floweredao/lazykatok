@@ -106,6 +106,12 @@ impl Archive {
         Ok(rows)
     }
 
+    /// The chunk just before or after `chunk` in its chat, in reading order.
+    ///
+    /// Several chunks of a chat can share `started_at`, since messages are stamped to the second.
+    /// `chunk_id` is a content hash and cannot order those; `rowid` can, because a chat's chunks
+    /// are inserted in reading order and a scoped rebuild reinserts every chunk at or after its
+    /// cut, so chunks sharing a `started_at` always come from one insert pass.
     fn neighbor_chunk(&self, chunk: &Chunk, direction: Neighbor) -> Result<Option<ChunkSummary>> {
         let (cmp, order) = match direction {
             Neighbor::Previous => ("<", "DESC"),
@@ -115,8 +121,9 @@ impl Archive {
             "SELECT chunk_id, chat_id, chat_name, sender_nickname, started_at,
                     ended_at, message_count
              FROM chunks
-             WHERE chat_id = ?1 AND (started_at, chunk_id) {cmp} (?2, ?3)
-             ORDER BY started_at {order}, chunk_id {order}
+             WHERE chat_id = ?1
+               AND (started_at, rowid) {cmp} (?2, (SELECT rowid FROM chunks WHERE chunk_id = ?3))
+             ORDER BY started_at {order}, rowid {order}
              LIMIT 1"
         );
         let row = self

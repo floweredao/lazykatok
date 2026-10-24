@@ -29,12 +29,14 @@ pub const TAIL_REBUILD_START_QUERY: &str = "SELECT started_at, ended_at FROM chu
 /// touches only the tail and never sorts or scans the whole archive.
 pub const RAW_MESSAGES_FOR_CHAT_SINCE_QUERY: &str =
     "SELECT account_hash, chat_id, chat_name, chat_type, message_id,
-            sender_nickname, timestamp, text, message_type
+            sender_nickname, timestamp, text, message_type, sender_id
      FROM messages
      WHERE chat_id = ?1 AND timestamp >= COALESCE(?2, '')
      ORDER BY timestamp, message_id";
 
 impl Archive {
+    /// A chat's chunks in reading order. Ties on `started_at` are broken by `rowid`, not
+    /// `chunk_id`; see `neighbor_chunk` for why that is reading order.
     pub fn chunks_for_chat(&self, chat_id: &str) -> Result<Vec<ChunkSummary>> {
         let mut stmt = self
             .conn
@@ -43,7 +45,7 @@ impl Archive {
                     ended_at, message_count
              FROM chunks
              WHERE chat_id = ?1
-             ORDER BY started_at, chunk_id",
+             ORDER BY started_at, rowid",
             )
             .map_err(Error::Sql)?;
         let rows = stmt
@@ -176,7 +178,7 @@ impl Archive {
             .conn
             .prepare(
                 "SELECT account_hash, chat_id, chat_name, chat_type, message_id,
-                    sender_nickname, timestamp, text, message_type
+                    sender_nickname, timestamp, text, message_type, sender_id
              FROM messages ORDER BY chat_id, timestamp, message_id",
             )
             .map_err(Error::Sql)?;
@@ -203,7 +205,7 @@ impl Archive {
             .conn
             .prepare(&format!(
                 "SELECT account_hash, chat_id, chat_name, chat_type, message_id,
-                    sender_nickname, timestamp, text, message_type
+                    sender_nickname, timestamp, text, message_type, sender_id
              FROM messages WHERE chat_id IN ({placeholders})
              ORDER BY chat_id, timestamp, message_id"
             ))
@@ -301,7 +303,7 @@ impl Archive {
             .conn
             .prepare(
                 "SELECT account_hash, chat_id, chat_name, chat_type, message_id,
-                    sender_nickname, timestamp, text, message_type
+                    sender_nickname, timestamp, text, message_type, sender_id
              FROM messages
              WHERE chat_id = ?1 AND (?2 IS NULL OR timestamp >= ?2)
              ORDER BY timestamp, message_id",
