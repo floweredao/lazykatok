@@ -1,5 +1,15 @@
 use crate::{archive::Archive, types::SearchHit, Error, Result};
 use rusqlite::params;
+use unicode_normalization::UnicodeNormalization;
+
+/// Bring a query to NFC, the form KakaoTalk stores typed text in.
+///
+/// macOS hands out NFD for file names and text copied from them, and decomposed Hangul is a
+/// different byte string from the composed syllables it draws as, so LIKE, FTS and embedding
+/// lookups all miss it.
+pub(crate) fn normalize_query(query: &str) -> String {
+    query.nfc().collect()
+}
 
 pub fn keyword_search(archive: &Archive, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
     keyword_search_with_snippet(archive, query, limit, 80)
@@ -11,6 +21,7 @@ pub fn keyword_search_with_snippet(
     limit: usize,
     snippet_length: usize,
 ) -> Result<Vec<SearchHit>> {
+    let query = &normalize_query(query);
     if query.trim().is_empty() {
         return Err(Error::EmptyQuery);
     }
@@ -50,6 +61,7 @@ pub fn bm25_search_with_snippet(
     limit: usize,
     snippet_length: usize,
 ) -> Result<Vec<SearchHit>> {
+    let query = &normalize_query(query);
     let ids = bm25_chunk_ids(archive, query, limit)?;
     hydrate_hits(archive, ids, "bm25", query, snippet_length)
 }
@@ -84,9 +96,22 @@ pub(crate) fn bm25_chunk_ids(archive: &Archive, query: &str, limit: usize) -> Re
 fn literal_fts_query(query: &str) -> String {
     query
         .split_whitespace()
-        .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
+        .map(|term| {
+            let phrase = format!("\"{}\"", term.replace('"', "\"\""));
+            // Korean attaches particles and endings to the word (`회의는`), and the tokenizer
+            // only splits on spaces and punctuation, so a Hangul term matches as a token prefix.
+            if term.chars().any(is_hangul) {
+                format!("{phrase}*")
+            } else {
+                phrase
+            }
+        })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn is_hangul(ch: char) -> bool {
+    matches!(ch, '\u{AC00}'..='\u{D7A3}' | '\u{1100}'..='\u{11FF}' | '\u{3130}'..='\u{318F}')
 }
 
 pub(crate) fn hydrate_hits(
