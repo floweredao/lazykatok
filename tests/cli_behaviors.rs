@@ -1048,3 +1048,92 @@ fn cli_prune_deleted_rebuilds_before_the_later_edit_floor() {
         "deleted text must leave chunks and keyword search even when the chat also has a later edit"
     );
 }
+
+#[test]
+fn cli_prune_reports_the_same_list_in_the_same_order_on_every_run() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fixture = dir.path().join("prune-order.jsonl");
+    let data_dir = dir.path().join("data");
+    let rows = |drop_middle: bool| {
+        let mut out = String::new();
+        for chat in 1..=6 {
+            for (idx, timestamp) in [
+                "2026-01-01T00:00:00Z",
+                "2026-01-01T00:00:10Z",
+                "2026-01-01T00:00:20Z",
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                if drop_middle && idx == 1 {
+                    continue;
+                }
+                out.push_str(&format!(
+                    "{{\"account_hash\":\"acct-x\",\"chat_id\":\"chat-{chat}\",\"chat_name\":\"Synthetic {chat}\",\
+                     \"chat_type\":\"group\",\"message_id\":\"m{chat}-{idx}\",\"sender_id\":\"u1\",\
+                     \"sender_nickname\":\"tester\",\"timestamp\":\"{timestamp}\",\"text\":\"합성 {idx}\",\
+                     \"message_type\":\"text\",\"reply_to_message_id\":null}}\n"
+                ));
+            }
+        }
+        out
+    };
+    let sync = |extra: &str| {
+        let output = Command::cargo_bin("lazykatok")
+            .expect("lazykatok binary")
+            .args([
+                "--data-dir",
+                data_dir.to_str().expect("utf8 path"),
+                "sync",
+                "--source",
+                "fixture",
+                fixture.to_str().expect("utf8 path"),
+                "--json",
+            ])
+            .args((!extra.is_empty()).then_some(extra))
+            .output()
+            .expect("run sync");
+        assert!(
+            output.status.success(),
+            "sync {extra} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).expect("parse sync output")
+    };
+    let ids = |list: &serde_json::Value| -> Vec<String> {
+        list.as_array()
+            .expect("message list")
+            .iter()
+            .map(|entry| format!("{}/{}", entry["chat_id"], entry["message_id"]).replace('"', ""))
+            .collect()
+    };
+
+    std::fs::write(&fixture, rows(false)).expect("write initial fixture");
+    sync("");
+    std::fs::write(&fixture, rows(true)).expect("write fixture with deletions");
+
+    let expected: Vec<String> = (1..=6)
+        .map(|chat| format!("chat-{chat}/m{chat}-1"))
+        .collect();
+    let first = ids(&sync("--prune-preview")["prunable_messages"]);
+    let second = ids(&sync("--prune-preview")["prunable_messages"]);
+    assert_eq!(
+        first, expected,
+        "a preview lists deletions in a stable order"
+    );
+    assert_eq!(
+        second, first,
+        "the same preview twice must report the same list"
+    );
+
+    let applied = ids(&sync("--prune-deleted")["pruned_messages"]);
+    assert_eq!(
+        applied, first,
+        "the deletion reports what its preview listed"
+    );
+    let again = ids(&sync("--prune-deleted")["pruned_messages"]);
+    assert!(
+        again.is_empty(),
+        "a second prune has nothing left: {again:?}"
+    );
+}
