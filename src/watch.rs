@@ -231,10 +231,10 @@ impl ReplyUiState {
         }
     }
 
-    /// Paste is insertion only. Newlines become spaces and cannot submit the draft.
+    /// Paste is insertion only. Newlines and tabs become spaces and cannot submit the draft.
     pub fn paste(&mut self, text: &str) {
         for character in text.chars() {
-            if matches!(character, '\r' | '\n') {
+            if matches!(character, '\r' | '\n' | '\t') {
                 self.insert(' ');
             } else if !character.is_control() {
                 self.insert(character);
@@ -1257,6 +1257,13 @@ mod tests {
         ui.paste("한\n글");
         assert_eq!(ui.draft(), "a한 글c");
         assert_eq!(ui.cursor(), 4);
+    }
+
+    #[test]
+    fn reply_ui_paste_turns_tabs_into_spaces_instead_of_joining_words() {
+        let mut ui = ReplyUiState::default();
+        ui.paste("09:00\t회의\t🙂");
+        assert_eq!(ui.take_draft(), "09:00 회의 🙂");
     }
 
     #[test]
