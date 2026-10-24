@@ -78,9 +78,22 @@ pub(crate) fn bm25_chunk_ids(archive: &Archive, query: &str, limit: usize) -> Re
 fn literal_fts_query(query: &str) -> String {
     query
         .split_whitespace()
-        .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
+        .map(|term| {
+            let phrase = format!("\"{}\"", term.replace('"', "\"\""));
+            // Korean attaches particles and endings to the word (`회의는`), and the tokenizer
+            // only splits on spaces and punctuation, so a Hangul term matches as a token prefix.
+            if term.chars().any(is_hangul) {
+                format!("{phrase}*")
+            } else {
+                phrase
+            }
+        })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn is_hangul(ch: char) -> bool {
+    matches!(ch, '\u{AC00}'..='\u{D7A3}' | '\u{1100}'..='\u{11FF}' | '\u{3130}'..='\u{318F}')
 }
 
 pub(crate) fn hydrate_hits(
