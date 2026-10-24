@@ -2360,3 +2360,142 @@ fn syncing_only_an_edit_to_an_old_message_keeps_the_cursor_at_the_newest_message
     assert_eq!(report.updated_messages, 1);
     assert_eq!(cursor(), newest);
 }
+
+/// Pruning a reply must take its `reply_edges` row with it.
+///
+/// The scoped ref rebuild finds a chat's edges through the messages that still
+/// exist, so an edge whose child was just deleted is invisible to it: the row
+/// survived, still naming the removed message and the chunk it used to sit in.
+#[test]
+fn pruning_a_reply_drops_its_reply_edge_and_matches_a_full_rebuild() {
+    let at = chrono::Utc::now();
+    let seeded = vec![
+        raw("chat-r", "r0", "Alice", at, "질문 하나", None),
+        raw(
+            "chat-r",
+            "r1",
+            "Bob",
+            at + chrono::Duration::seconds(10),
+            "지워질 답장",
+            Some("r0"),
+        ),
+        raw(
+            "chat-r",
+            "r2",
+            "Alice",
+            at + chrono::Duration::seconds(20),
+            "남는 문장",
+            None,
+        ),
+    ];
+    let source: Vec<RawMessage> = seeded
+        .iter()
+        .filter(|m| m.message_id != "r1")
+        .cloned()
+        .collect();
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("archive.sqlite3");
+    let archive = Archive::open(&path).expect("open archive");
+    archive.sync_messages(&seeded).expect("seed");
+    rebuild_chunks(&archive).expect("seed chunks");
+
+    let removed = archive.reconcile_deletions(&source, true).expect("apply");
+    assert_eq!(removed.len(), 1);
+    rebuild_chunks_for_chats(&archive, settings(), &[whole_chat("chat-r")])
+        .expect("scoped rebuild");
+
+    let full_dir = tempfile::tempdir().expect("tempdir");
+    let full_path = full_dir.path().join("archive.sqlite3");
+    let full = Archive::open(&full_path).expect("open archive");
+    full.sync_messages(&source).expect("sync survivors");
+    rebuild_chunks(&full).expect("full rebuild");
+
+    let conn = Connection::open(&path).expect("open sqlite");
+    assert_eq!(
+        snapshot(&conn),
+        snapshot(&Connection::open(&full_path).expect("open sqlite")),
+        "pruning then rebuilding the chat must leave what a fresh build of the survivors does"
+    );
+    assert_archive_invariants(&conn, 2);
+}
+
+/// An update that moves a message later must rebuild from where it used to sit.
+///
+/// Scoping the cut by the new timestamp alone kept the chunk that still held the message at its
+/// old position, so the message ended up in two chunks and the prefix no longer matched a full
+/// rebuild.
+#[test]
+fn a_message_moved_later_is_rebuilt_from_its_old_position() {
+    let (mut messages, _split) = bursty_conversation();
+    let full_dir = tempfile::tempdir().expect("tempdir");
+    let full = Archive::open(&full_dir.path().join("archive.sqlite3")).expect("open archive");
+    full.sync_messages(&messages).expect("sync");
+    rebuild_chunks(&full).expect("seed full");
+
+    let staged_dir = tempfile::tempdir().expect("tempdir");
+    let staged = Archive::open(&staged_dir.path().join("archive.sqlite3")).expect("open archive");
+    staged.sync_messages(&messages).expect("sync");
+    rebuild_chunks(&staged).expect("seed staged");
+
+    // The first message of the second burst now reports a time after the third burst.
+    let old_timestamp = messages[3].timestamp.to_rfc3339();
+    messages[3].timestamp = messages[8].timestamp + chrono::Duration::seconds(30);
+    let change = [messages[3].clone()];
+    full.sync_messages(&change).expect("sync change full");
+    rebuild_chunks(&full).expect("ground-truth full rebuild");
+
+    let report = staged.sync_messages(&change).expect("sync change staged");
+    assert_eq!(report.updated_messages, 1);
+    assert_eq!(
+        report.touched_chats[0].earliest_changed_timestamp, old_timestamp,
+        "the change key must cover the position the message left"
+    );
+    rebuild_chunks_for_chats(&staged, settings(), &report.touched_chats).expect("scoped rebuild");
+    assert_eq!(
+        snapshot(full.connection()),
+        snapshot(staged.connection()),
+        "moving a message later diverged from a full rebuild"
+    );
+    assert_archive_invariants(staged.connection(), messages.len() as i64);
+}
+
+/// The windows a long chunk spills across are listed in reading order.
+///
+/// They were ordered by `parent_id`, a content hash, so `chunk parent` and
+/// `chunk context` showed the pieces of one long message shuffled.
+#[test]
+fn the_windows_of_a_split_chunk_are_listed_in_reading_order() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let archive = Archive::open(&dir.path().join("archive.sqlite3")).expect("open archive");
+    let text = (0..8)
+        .map(|part| format!("{part}").repeat(1_000))
+        .collect::<String>();
+    archive
+        .sync_messages(&[raw(
+            "chat-long",
+            "m0",
+            "Alice",
+            chrono::Utc::now(),
+            &text,
+            None,
+        )])
+        .expect("sync");
+    rebuild_chunks(&archive).expect("rebuild");
+
+    let chunk = &archive.chunks_for_chat("chat-long").expect("chunks")[0];
+    let windows = archive
+        .parent_windows_for_child(&chunk.chunk_id)
+        .expect("parent windows");
+    assert!(windows.len() > 2, "the chunk must split: {}", windows.len());
+    let joined = windows
+        .iter()
+        .map(|window| window.text.as_str())
+        .collect::<String>();
+    assert_eq!(joined, format!("[Alice] {text}"));
+    let ids = windows
+        .iter()
+        .map(|window| window.parent_id.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(chunk.window_parent_ids, ids);
+}

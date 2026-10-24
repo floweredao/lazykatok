@@ -1402,19 +1402,25 @@ fn select_watch_chat(source: &str, path: Option<PathBuf>, data_dir: &Path) -> Re
     io::stdin()
         .read_line(&mut input)
         .context("read selected chat")?;
-    let input = input.trim();
+    resolve_chat_selection(input.trim(), chats)
+}
+
+fn resolve_chat_selection(input: &str, chats: Vec<ChatSummary>) -> Result<ChatSummary> {
     if input.is_empty() {
         anyhow::bail!("no chat selected");
     }
-    if let Ok(number) = input.parse::<usize>() {
-        let index = selection_index(number, chats.len())
-            .with_context(|| format!("chat number {number} is out of range"))?;
+    let number = input.parse::<usize>().ok();
+    if let Some(index) = number.and_then(|number| selection_index(number, chats.len())) {
         return Ok(chats[index].clone());
     }
+    // A row number out of range may still be a chat_id: macOS chat ids are integers.
     chats
         .into_iter()
         .find(|chat| chat.chat_id == input)
-        .with_context(|| format!("no chat_id {input} in source"))
+        .with_context(|| match number {
+            Some(number) => format!("chat number {number} is out of range"),
+            None => format!("no chat_id {input} in source"),
+        })
 }
 
 fn find_chat_name(messages: &[RawMessage], chat_id: &str) -> Option<String> {
@@ -2035,6 +2041,23 @@ mod chat_selection_tests {
         assert_eq!(selection_index(1, 2), Some(1));
         assert_eq!(selection_index(2, 2), Some(0));
         assert_eq!(selection_index(3, 2), None);
+    }
+
+    #[test]
+    fn a_numeric_chat_id_selects_its_chat_instead_of_reading_as_an_index() {
+        // macOS chat ids are integers, so a typed chat_id parses as a number too.
+        let chats = vec![
+            summary("18200000000000001", "Older", Some("2026-01-01T09:00:00Z")),
+            summary("18200000000000002", "Newest", Some("2026-01-03T09:00:00Z")),
+        ];
+
+        let by_id = resolve_chat_selection("18200000000000001", chats.clone())
+            .expect("a listed chat_id selects that chat");
+        assert_eq!(by_id.chat_name, "Older");
+        let by_number = resolve_chat_selection("1", chats.clone()).expect("row 1");
+        assert_eq!(by_number.chat_name, "Newest");
+        assert!(resolve_chat_selection("3", chats.clone()).is_err());
+        assert!(resolve_chat_selection("", chats).is_err());
     }
 
     #[test]

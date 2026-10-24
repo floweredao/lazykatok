@@ -19,7 +19,7 @@ Both come straight from the boundary functions and are the reason a prefix of th
 
 ## The recompute start rule
 
-Let `K(m) = (m.timestamp, m.message_id)` be the send-order key, matching `raw_messages ORDER BY chat_id, timestamp, message_id`. For a touched chat, let `e` be the smallest `K` over the chat's changed messages (inserted or updated this sync).
+Let `K(m) = (m.timestamp, m.message_id)` be the send-order key, matching `raw_messages ORDER BY chat_id, timestamp, message_id`. For a touched chat, let `e` be the smallest `K` over the chat's changed messages (inserted or updated this sync). An update that changes a message's timestamp counts at both its old and its new key: the chunk it left is as stale as the one it joins.
 
 **Recompute start point `P` = the first message of the last existing parent window whose start key is strictly less than `e`.** If no existing window starts strictly before `e` (the earliest change lands at or before the chat's first window), `P` is the beginning of the chat and the rebuild is a full chat rebuild.
 

@@ -542,19 +542,45 @@ fn wrap_display_line(line: &str, width: usize) -> Vec<String> {
     }
     let mut rows = vec![String::new()];
     let mut row_width = 0usize;
-    for character in line.chars() {
-        let character_width = char_width(character);
-        if character_width > width {
+    for cluster in display_clusters(line) {
+        let cluster_width = UnicodeWidthStr::width(cluster);
+        if cluster_width > width {
             continue;
         }
-        if row_width > 0 && row_width + character_width > width {
+        if row_width > 0 && row_width + cluster_width > width {
             rows.push(String::new());
             row_width = 0;
         }
-        rows.last_mut().expect("one reply row").push(character);
-        row_width += character_width;
+        rows.last_mut().expect("one reply row").push_str(cluster);
+        row_width += cluster_width;
     }
     rows
+}
+
+/// Split `line` into the pieces a terminal draws together: a character plus the zero-width
+/// characters that modify it (combining marks, variation selectors), skin-tone modifiers, and
+/// anything joined to it by a zero-width joiner.
+///
+/// Widths have to be measured per piece rather than per character: U+FE0F widens the symbol
+/// before it from one cell to two, so summing character widths under-counts and a row overflows.
+fn display_clusters(line: &str) -> Vec<&str> {
+    let mut clusters = Vec::new();
+    let mut start = 0;
+    let mut joined = false;
+    for (index, character) in line.char_indices() {
+        let attaches = joined
+            || char_width(character) == 0
+            || ('\u{1F3FB}'..='\u{1F3FF}').contains(&character);
+        if index > start && !attaches {
+            clusters.push(&line[start..index]);
+            start = index;
+        }
+        joined = character == '\u{200D}';
+    }
+    if start < line.len() {
+        clusters.push(&line[start..]);
+    }
+    clusters
 }
 
 fn centered_rule(label: &str, width: usize) -> String {
@@ -598,13 +624,13 @@ fn chars_width(characters: &[char]) -> usize {
 fn display_prefix(value: &str, width: usize) -> String {
     let mut output = String::new();
     let mut used = 0usize;
-    for character in value.chars() {
-        let character_width = char_width(character);
-        if used + character_width > width {
+    for cluster in display_clusters(value) {
+        let cluster_width = UnicodeWidthStr::width(cluster);
+        if used + cluster_width > width {
             break;
         }
-        output.push(character);
-        used += character_width;
+        output.push_str(cluster);
+        used += cluster_width;
     }
     output
 }
@@ -1134,6 +1160,26 @@ mod tests {
                 "width {width}: {rows:?}"
             );
         }
+    }
+
+    #[test]
+    fn emoji_presentation_sequences_are_measured_as_drawn() {
+        // U+FE0F turns a one-cell symbol into a two-cell emoji. Summing per-character widths
+        // counted each heart as one cell and packed all three into a single six-cell row.
+        let hearts = "\u{2764}\u{FE0F}\u{2764}\u{FE0F}\u{2764}\u{FE0F}";
+        for width in 2..=5 {
+            let rows = wrap_display_line(hearts, width);
+            assert!(
+                rows.iter()
+                    .all(|row| UnicodeWidthStr::width(row.as_str()) <= width),
+                "width {width}: {rows:?}"
+            );
+            assert_eq!(rows.concat(), hearts, "width {width}: nothing is dropped");
+        }
+
+        let prefix = display_prefix(hearts, 3);
+        assert_eq!(prefix, "\u{2764}\u{FE0F}");
+        assert!(UnicodeWidthStr::width(pad_display(hearts, 4).as_str()) <= 4);
     }
 
     #[test]

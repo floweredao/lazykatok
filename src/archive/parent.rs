@@ -74,12 +74,18 @@ impl Archive {
         Ok(parents)
     }
 
+    /// The windows holding `chunk_id`, in reading order.
+    ///
+    /// A chunk sits in more than one window only when its text spills over the size limit, and
+    /// the continuation segments then share the chunk's `started_at`. They are inserted in reading
+    /// order, so the row order breaks that tie; `parent_id` is a content hash and cannot.
     pub fn window_parent_ids(&self, chunk_id: &str) -> Result<Vec<String>> {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT parent_id FROM parent_chunk_children
-             WHERE chunk_id = ?1 ORDER BY parent_id",
+                "SELECT pcc.parent_id FROM parent_chunk_children pcc
+             JOIN parent_chunks p ON p.parent_id = pcc.parent_id
+             WHERE pcc.chunk_id = ?1 ORDER BY p.started_at, p.rowid",
             )
             .map_err(Error::Sql)?;
         let rows = stmt
