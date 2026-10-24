@@ -6,6 +6,7 @@ use lazykatok::{
     chunking::rebuild_chunks,
     fixture::read_fixture,
     search::{bm25_search, keyword_search},
+    types::RawMessage,
 };
 use serde_json::Value;
 use std::path::Path;
@@ -97,5 +98,52 @@ fn semantic_and_hybrid_match_a_decomposed_query() {
         assert!(!hits.is_empty(), "{mode}: no hits");
         let snippet = hits[0]["snippet"].as_str().expect("snippet");
         assert!(snippet.contains("점심"), "{mode}: {snippet}");
+    }
+}
+
+#[test]
+fn parent_windows_are_not_cut_inside_a_grapheme_cluster() {
+    // A regional-indicator flag, a ZWJ emoji sequence, and a decomposed Hangul syllable are
+    // each one visible character spread over several code points.
+    let clusters = [
+        "\u{1F1F0}\u{1F1F7}",
+        "\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F467}",
+        "\u{1112}\u{1161}\u{11AB}",
+    ];
+    for cluster in clusters {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let archive = Archive::open(&dir.path().join("archive.sqlite3")).expect("open archive");
+        // The parent line is `[가람] ` (5 chars) plus the text; the window limit is 3000
+        // chars, so the cluster starts one char before the cut.
+        let text = format!("{}{cluster}끝", "가".repeat(2999 - 5));
+        let message = RawMessage {
+            account_hash: "acct-synthetic".to_string(),
+            chat_id: "chat-long".to_string(),
+            chat_name: "Synthetic Long Room".to_string(),
+            chat_type: "group".to_string(),
+            message_id: "long-1".to_string(),
+            sender_id: "u1".to_string(),
+            sender_nickname: "가람".to_string(),
+            timestamp: "2026-01-01T09:00:00Z".parse().expect("timestamp"),
+            text,
+            message_type: "text".to_string(),
+            reply_to_message_id: None,
+        };
+        archive.sync_messages(&[message]).expect("sync messages");
+        rebuild_chunks(&archive).expect("rebuild chunks");
+
+        let parents = archive.all_parent_chunks().expect("parent chunks");
+        assert_eq!(parents.len(), 2, "{cluster:?}");
+        let (head, tail): (Vec<_>, Vec<_>) = parents
+            .iter()
+            .partition(|parent| parent.text.starts_with("[가람] "));
+        assert!(
+            head[0].text.ends_with('가'),
+            "{cluster:?}: first window ends inside the cluster"
+        );
+        assert!(
+            tail[0].text.starts_with(cluster),
+            "{cluster:?}: second window starts inside the cluster"
+        );
     }
 }
