@@ -58,7 +58,15 @@ pub fn export_transcript(
     since: Option<&str>,
     out_dir: &Path,
 ) -> Result<TranscriptReport> {
-    let messages = archive.messages_for_transcript(chat_id, since)?;
+    // The archive stores UTC as `+00:00`, and the range filter compares that text, so a cutoff
+    // written with `Z` or another offset has to be brought into the same form first.
+    let since = since
+        .map(|value| {
+            chrono::DateTime::parse_from_rfc3339(value)
+                .map(|instant| instant.with_timezone(&chrono::Utc).to_rfc3339())
+        })
+        .transpose()?;
+    let messages = archive.messages_for_transcript(chat_id, since.as_deref())?;
 
     let mut chat_name = chat_id.to_string();
     let mut lines: Vec<String> = Vec::new();

@@ -1,21 +1,22 @@
 # lazykatok
 
 로컬 우선(local-first) 카카오톡 터미널 클라이언트. 방 목록을 최신순으로 골라 들어가는
-실시간 대화 TUI, 로컬 암호화 아카이브, 키워드·BM25·의미 검색을 하나의 CLI로 제공합니다.
+실시간 대화 TUI, 로컬 아카이브, 키워드·BM25·의미 검색을 하나의 CLI로 제공합니다.
 Apple Silicon macOS 전용.
 
 [![CI](https://github.com/changeroa/lazykatok/actions/workflows/ci.yml/badge.svg)](https://github.com/changeroa/lazykatok/actions/workflows/ci.yml)
 
 ## 특징
 
-- **대화 TUI (`lazykatok chat`)** — 마지막 메시지가 최신인 방이 목록 맨 아래(입력
+- **대화 TUI (`lazykatok watch --select --reply`)** — 마지막 메시지가 최신인 방이 목록 맨 아래(입력
   프롬프트 바로 위)에 1번으로 오는 방 선택, 로컬 시각 `HH:MM` + 보낸 사람 열 + 연속
   메시지 `·` 묶음 + 날짜 구분선으로 정돈된 대화 뷰, readline식 입력 편집, 스크롤과
   새 메시지 표식. 폴링과 전송이 백그라운드에서 돌아 입력은 항상 반응형입니다.
 - **답장 전송** — TUI에서 Enter로 카카오톡 앱에 실제 전송(macOS Accessibility 경로).
   전송 중에도 입력 가능하고, 동시 전송은 안전을 위해 하나로 직렬화됩니다.
 - **로컬 검색** — 키워드 / BM25 / 임베딩 의미 검색. 대화 데이터는 전부 로컬
-  SQLCipher 아카이브에 저장되고 네트워크로 나가지 않습니다.
+  SQLite 아카이브에 저장되고, 외부 임베딩 엔드포인트를 직접 지정하지 않는 한
+  네트워크로 나가지 않습니다.
 
 ## 요구 사항
 
@@ -24,7 +25,9 @@ Apple Silicon macOS 전용.
 - Rust 1.91+ (직접 빌드 시)
 - 터미널에 **전체 디스크 접근 권한**(카톡 DB 읽기)과 **접근성 권한**(전송) —
 
-  시스템 설정 > 개인정보 보호 및 보안에서 부여하고 `lazykatok doctor`로 확인하세요.
+  `lazykatok permissions macos --accessibility`로 시스템 설정 > 개인정보 보호 및
+  보안 화면을 열어 부여하고, 카톡 데이터 접근은 `lazykatok doctor --macos-probe`로
+  확인하세요. 접근성 권한은 `doctor`가 확인하지 않습니다.
 
 ## 설치
 
@@ -40,7 +43,7 @@ cargo build --release
 ```bash
 cat > ~/.local/bin/lazykatok <<'EOF'
 #!/usr/bin/env bash
-exec "$(dirname "$(git -C ~/src/lazykatok rev-parse --git-dir 2>/dev/null)")/target/release/lazykatok" "$@"
+exec "$(git -C ~/src/lazykatok rev-parse --show-toplevel)/target/release/lazykatok" "$@"
 EOF
 # 실제 클론 경로에 맞게 조정한 뒤 chmod +x
 ```
@@ -48,16 +51,21 @@ EOF
 ## 빠른 시작
 
 ```bash
-lazykatok doctor                 # 권한·설정 상태 점검
-lazykatok sync                   # 로컬 카톡 DB → 아카이브 동기화
-lazykatok chat                   # 방 선택 → 대화 TUI 진입 (기본)
-lazykatok chat-bg                # 카톡 창을 띄우지 않고 이미 열린 방에만 전송
-lazykatok keyword 회식           # 키워드 검색 (--limit 5 등 옵션 전달)
-lazykatok bm25 회식              # BM25 검색
-lazykatok semantic "언제 만나기로 했지"  # 의미 검색
+lazykatok doctor --macos-probe        # 카톡 앱·데이터 접근·설정 상태 점검
+lazykatok sync --source macos         # 로컬 카톡 DB → 아카이브 동기화
+lazykatok index                       # 의미 검색용 로컬 벡터 인덱스 생성
+lazykatok watch --select --reply --accept-use-policy --source macos   # 방 선택 → 대화 TUI
+lazykatok watch --select --reply --reply-no-open --accept-use-policy --source macos   # 이미 열린 방에만 전송
+lazykatok search keyword 회식 --limit 5   # 키워드 검색 (기본 10건)
+lazykatok search bm25 회식                # BM25 검색
+lazykatok search semantic "언제 만나기로 했지"  # 의미 검색 (index 필요)
 ```
 
-원본 CLI 그대로 쓰는 경우:
+`--source`를 생략하면 설정 파일의 `source_adapter`(기본값 `fixture`, JSONL 경로
+필요)를 쓰므로 실제 카톡을 읽을 때는 `--source macos`를 붙이세요. `--data-dir`과
+`--config`는 하위 명령 앞에 둡니다 (`lazykatok --data-dir <dir> sync ...`).
+
+그 밖의 예:
 
 ```bash
 lazykatok watch --select --reply --accept-use-policy --source macos
@@ -74,7 +82,7 @@ lazykatok transcript --chat <chat_id> --from 2026-08-01 --to 2026-08-31 --out ex
 
 | 환경 변수 | 의미 |
 | --- | --- |
-| `KATOK_EMBED_URL` | 엔드포인트 URL. 설정하면 `openai-compatible` 백엔드가 선택됩니다. |
+| `KATOK_EMBED_URL` | 엔드포인트 URL. 설정하면 `openai-compatible` 백엔드가 선택됩니다. 단, `KATOK_EMBEDDER`나 설정 파일의 `embedder_provider`가 `mock`·`local-test`이면 네트워크를 쓰지 않는 그 모드가 유지됩니다. |
 | `KATOK_EMBED_MODEL` | 요청에 보낼 모델 이름 (`openai/<model>` ID로 기록) |
 | `KATOK_EMBED_DIM` | 벡터 차원 (예: `Qwen3-Embedding-0.6B`는 `1024`) |
 | `KATOK_EMBED_API_KEY` | 보낼 `Authorization: Bearer` 토큰 |
@@ -111,14 +119,15 @@ URL은 `/embeddings`로 끝나면 그대로, `/v1`로 끝나면 `/embeddings`를
   보는 중이면 화면은 흔들리지 않고 `N new messages` 표식만 표시됩니다.
 - 전송은 즉시 `전송 중…` 상태 줄과 함께 백그라운드로 실행되고, 결과는
   `sent reply (N chars)` 또는 `send failed: ...` 줄로 알림됩니다. 전송 중 추가
-  Enter는 초안을 지키고 이전 전송 완료를 기다립니다.
-- paste는 텍스트 삽입일 뿐 절대 전송을 유발하지 않습니다. 붙여넣은 줄바꿈은
-  공백으로 변환됩니다.
+  Enter는 초안을 지키고 이전 전송 완료를 기다립니다. 알 수 없는 슬래시 명령도
+  전송하지 않고 초안을 그대로 남겨 둡니다.
+- paste는 텍스트 삽입일 뿐 절대 전송을 유발하지 않습니다. 붙여넣은 줄바꿈과
+  탭은 공백으로 변환됩니다.
 
 ### 전송 주의사항
 
-전송은 되돌릴 수 없고 상대에게 실제로 도착합니다. `--reply-no-open`(래퍼의
-`chat-bg`)은 카톡 창을 띄우거나 포커스를 가져가지 않고 이미 열려 있는 방에만
+전송은 되돌릴 수 없고 상대에게 실제로 도착합니다. `--reply-no-open`은
+카톡 창을 띄우거나 포커스를 가져가지 않고 이미 열려 있는 방에만
 조용히 전송합니다. 기본 경로는 필요할 때만 잠깐 커튼을 띄우고 카톡을 앞으로
 가져옵니다. 자세한 정책은 [ACCEPTABLE_USE_POLICY.md](ACCEPTABLE_USE_POLICY.md)와
 [DISCLAIMER.md](DISCLAIMER.md)를 참고하세요.
@@ -126,11 +135,16 @@ URL은 `/embeddings`로 끝나면 그대로, `/v1`로 끝나면 `/embeddings`를
 ## 프라이버시
 
 - 모든 대화 데이터는 로컬(`~/Library/Application Support/katok` — 이전 이름의
-  디렉터리를 그대로 사용) SQLCipher 암호화 아카이브에 저장됩니다.
+  디렉터리를 그대로 사용, `--data-dir`로 변경) 아카이브 `archive.sqlite3`에
+  저장됩니다. 아카이브는 암호화되지 않은 SQLite 파일이며, 데이터 디렉터리는 소유자
+  전용(0700) 권한으로 만들어집니다. `transcript`와 `media get`의 출력도 `--out`을
+  주지 않으면 같은 디렉터리의 `transcripts/`, `media/` 아래에 쓰입니다.
 - 텔레메트리가 없습니다. 의미 검색의 임베딩은 기본적으로 로컬 모델로
   계산됩니다. `KATOK_EMBED_URL`(또는 설정 파일의 `embedder_url`)로 OpenAI 호환
   엔드포인트를 직접 지정한 경우에만 인덱싱할 문단과 검색어가 그 엔드포인트로
-  전송됩니다.
+  전송됩니다. 그 밖에 기본 로컬 백엔드의 첫 `index`는 모델 파일을 내려받고,
+  `media get`과 `media backfill`은 첨부의 CDN 링크를 요청합니다
+  (`media get --no-cdn`으로 끔).
 - 이 저장소는 공개입니다. 실제 대화에서 유래한 어떤 값도 커밋되지 않으며,
   테스트는 합성 fixture만 사용합니다 (`scripts/verify_release_config.py`의
   프라이버시 오라클이 이를 계속 검사합니다).
@@ -141,7 +155,9 @@ URL은 `/embeddings`로 끝나면 그대로, `/v1`로 끝나면 `/embeddings`를
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
+cargo publish --dry-run
 python3 scripts/verify_release_config.py
+python3 scripts/verify_history_privacy.py . origin/main..HEAD
 ```
 
 ## 라이선스

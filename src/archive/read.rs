@@ -29,12 +29,14 @@ pub const TAIL_REBUILD_START_QUERY: &str = "SELECT started_at, ended_at FROM chu
 /// touches only the tail and never sorts or scans the whole archive.
 pub const RAW_MESSAGES_FOR_CHAT_SINCE_QUERY: &str =
     "SELECT account_hash, chat_id, chat_name, chat_type, message_id,
-            sender_nickname, timestamp, text, message_type
+            sender_nickname, timestamp, text, message_type, sender_id
      FROM messages
      WHERE chat_id = ?1 AND timestamp >= COALESCE(?2, '')
      ORDER BY timestamp, message_id";
 
 impl Archive {
+    /// A chat's chunks in reading order. Ties on `started_at` are broken by `rowid`, not
+    /// `chunk_id`; see `neighbor_chunk` for why that is reading order.
     pub fn chunks_for_chat(&self, chat_id: &str) -> Result<Vec<ChunkSummary>> {
         let mut stmt = self
             .conn
@@ -43,7 +45,7 @@ impl Archive {
                     ended_at, message_count
              FROM chunks
              WHERE chat_id = ?1
-             ORDER BY started_at, chunk_id",
+             ORDER BY started_at, rowid",
             )
             .map_err(Error::Sql)?;
         let rows = stmt
@@ -142,11 +144,16 @@ impl Archive {
     /// so in a room being typed in right now its idea of "last message" is stale
     /// within a minute, while the ordering only changes if a *different*
     /// same-named room overtakes it.
+    ///
+    /// Names come from `chats`, which every sync overwrites with what the source
+    /// reports now. `messages.chat_name` cannot stand in for it: a row the source
+    /// has pruned is never rewritten, so after a rename the archive still holds
+    /// the old name on a room's older messages.
     pub fn chat_identity(&self, chat_id: &str) -> Result<Option<(String, usize)>> {
         let Some(name): Option<String> = self
             .conn
             .query_row(
-                "SELECT chat_name FROM messages WHERE chat_id = ?1 LIMIT 1",
+                "SELECT chat_name FROM chats WHERE chat_id = ?1",
                 [chat_id],
                 |row| row.get(0),
             )
@@ -158,12 +165,11 @@ impl Archive {
         let rank: i64 = self
             .conn
             .query_row(
-                "SELECT COUNT(*) FROM (
-                     SELECT chat_id, MAX(timestamp) AS last FROM messages
-                     WHERE chat_name = ?1 GROUP BY chat_id
-                 ) peers
-                 WHERE peers.chat_id <> ?2
-                   AND peers.last > (SELECT MAX(timestamp) FROM messages WHERE chat_id = ?2)",
+                "SELECT COUNT(*) FROM chats peer
+                 WHERE peer.chat_name = ?1
+                   AND peer.chat_id <> ?2
+                   AND (SELECT MAX(timestamp) FROM messages WHERE chat_id = peer.chat_id)
+                     > (SELECT MAX(timestamp) FROM messages WHERE chat_id = ?2)",
                 params![name, chat_id],
                 |row| row.get(0),
             )
@@ -176,7 +182,7 @@ impl Archive {
             .conn
             .prepare(
                 "SELECT account_hash, chat_id, chat_name, chat_type, message_id,
-                    sender_nickname, timestamp, text, message_type
+                    sender_nickname, timestamp, text, message_type, sender_id
              FROM messages ORDER BY chat_id, timestamp, message_id",
             )
             .map_err(Error::Sql)?;
@@ -203,7 +209,7 @@ impl Archive {
             .conn
             .prepare(&format!(
                 "SELECT account_hash, chat_id, chat_name, chat_type, message_id,
-                    sender_nickname, timestamp, text, message_type
+                    sender_nickname, timestamp, text, message_type, sender_id
              FROM messages WHERE chat_id IN ({placeholders})
              ORDER BY chat_id, timestamp, message_id"
             ))
@@ -290,7 +296,8 @@ impl Archive {
     /// Messages of one chat in send order, optionally from `since` (RFC3339) onward.
     ///
     /// Timestamps are stored as RFC3339 text, which sorts and compares lexicographically in the
-    /// same order as the instants it encodes, so the range filter needs no conversion.
+    /// same order as the instants it encodes, so the range filter needs no conversion as long as
+    /// `since` is in the stored form (UTC, `+00:00`).
     pub fn messages_for_transcript(
         &self,
         chat_id: &str,
@@ -300,7 +307,7 @@ impl Archive {
             .conn
             .prepare(
                 "SELECT account_hash, chat_id, chat_name, chat_type, message_id,
-                    sender_nickname, timestamp, text, message_type
+                    sender_nickname, timestamp, text, message_type, sender_id
              FROM messages
              WHERE chat_id = ?1 AND (?2 IS NULL OR timestamp >= ?2)
              ORDER BY timestamp, message_id",

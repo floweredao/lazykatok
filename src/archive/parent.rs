@@ -74,12 +74,18 @@ impl Archive {
         Ok(parents)
     }
 
+    /// The windows holding `chunk_id`, in reading order.
+    ///
+    /// A chunk sits in more than one window only when its text spills over the size limit, and
+    /// the continuation segments then share the chunk's `started_at`. They are inserted in reading
+    /// order, so the row order breaks that tie; `parent_id` is a content hash and cannot.
     pub fn window_parent_ids(&self, chunk_id: &str) -> Result<Vec<String>> {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT parent_id FROM parent_chunk_children
-             WHERE chunk_id = ?1 ORDER BY parent_id",
+                "SELECT pcc.parent_id FROM parent_chunk_children pcc
+             JOIN parent_chunks p ON p.parent_id = pcc.parent_id
+             WHERE pcc.chunk_id = ?1 ORDER BY p.started_at, p.rowid",
             )
             .map_err(Error::Sql)?;
         let rows = stmt
@@ -106,6 +112,12 @@ impl Archive {
         Ok(rows)
     }
 
+    /// The chunk just before or after `chunk` in its chat, in reading order.
+    ///
+    /// Several chunks of a chat can share `started_at`, since messages are stamped to the second.
+    /// `chunk_id` is a content hash and cannot order those; `rowid` can, because a chat's chunks
+    /// are inserted in reading order and a scoped rebuild reinserts every chunk at or after its
+    /// cut, so chunks sharing a `started_at` always come from one insert pass.
     fn neighbor_chunk(&self, chunk: &Chunk, direction: Neighbor) -> Result<Option<ChunkSummary>> {
         let (cmp, order) = match direction {
             Neighbor::Previous => ("<", "DESC"),
@@ -115,8 +127,9 @@ impl Archive {
             "SELECT chunk_id, chat_id, chat_name, sender_nickname, started_at,
                     ended_at, message_count
              FROM chunks
-             WHERE chat_id = ?1 AND (started_at, chunk_id) {cmp} (?2, ?3)
-             ORDER BY started_at {order}, chunk_id {order}
+             WHERE chat_id = ?1
+               AND (started_at, rowid) {cmp} (?2, (SELECT rowid FROM chunks WHERE chunk_id = ?3))
+             ORDER BY started_at {order}, rowid {order}
              LIMIT 1"
         );
         let row = self
