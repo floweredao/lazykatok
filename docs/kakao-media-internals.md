@@ -1,7 +1,7 @@
 # KakaoTalk storage internals
 
-Reverse-engineered detail behind `katok media get`, `katok sync --source macos`, and
-`katok transcript`. Read it when debugging extraction or decryption; the README and
+Reverse-engineered detail behind `lazykatok media get`, `lazykatok sync --source macos`, and
+`lazykatok transcript`. Read it when debugging extraction or decryption; the README and
 `skills/katok/SKILL.md` are the operational entry points.
 
 The rules below describe the storage contract the implementation and synthetic
@@ -33,8 +33,12 @@ database`.
 
 ## Paths
 
-- Container: `~/Library/Containers/com.kakao.KakaoTalkMac/Data/Library/Application Support/com.kakao.KakaoTalkMac/`
-- Database: the single 78-lowercase-hex file in that directory.
+- Store roots: `~/Library/Containers/com.kakao.KakaoTalkMac/Data/Library/Application Support/com.kakao.KakaoTalkMac/`
+  (inside the app sandbox) and `~/Library/Application Support/com.kakao.KakaoTalkMac/`
+  (outside it). Both are scanned; an install that moved between them leaves a frozen copy
+  under the same filename, so the most recently modified copy of each filename wins,
+  counting a nonempty `-wal` sidecar.
+- Database: a 78-lowercase-hex file, optionally with a `.db` suffix, directly in a store root.
 
 ## `NTChatMessage` columns
 
@@ -48,22 +52,24 @@ database`.
   Decrypting a cached file and hashing the result must equal it, which is what makes
   decryption verifiable at all.
 - System feed rows are JSON carrying `feedType`/`inviter`/`member`/`leaver`/`members`.
-  They stay in the archive; `katok transcript` filters them out of the rendered output.
+  They stay in the archive; `lazykatok transcript` filters them out of the rendered output.
 
 ## On-disk media cache
 
 ```
-<container>/<account 40-hex sha1>/<sha1(reverse(chatId))>/
+<store root>/<account 40-hex sha1>/<sha1(reverse(chatId))>/
     single photo (type 2):
       <sha1(reverse("p" + logId))>.img            full
       <sha1(reverse("t" + logId))>.thm            thumbnail
     album frame i (type 27):
       <sha1(reverse("p{i}_{logId}"))>.img         full,  i = 0..N-1
       <sha1(reverse("t{i}_{logId}"))>.thm         thumbnail
-    video (type 3): thumbnail only, single-photo scheme
+    video (type 3):
+      <sha1(reverse("v" + logId))>.vid            full, only if played on this Mac
+      <sha1(reverse("t" + logId))>.thm            thumbnail
 ```
 
-There can be more than one account directory.
+There can be more than one account directory, and media is merged across both store roots.
 
 ### Album naming, reverse-engineered
 
@@ -142,8 +148,9 @@ Every image attachment carries its own presigned CDN URL (`url` for a single pho
 `imageUrls[i]` for an album frame) with `credential`, `expires` and `signature` query
 parameters, valid roughly three days from send. When the full image is not cached
 locally, the resolver fetches that URL and keeps the bytes only if `sha1(body) == cs`.
-This is the only network access in the crate, and `--no-cdn` turns it off for a purely
-local run.
+Apart from an OpenAI-compatible embedding endpoint the user configured and the local
+model download on the first `index`, this is the only network access in the crate, and
+`--no-cdn` turns it off for a purely local run.
 
 The signature window is finite, and an expired URL answers 410 rather than
 hanging or returning a login page. Retroactive collection is therefore
