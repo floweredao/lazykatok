@@ -76,6 +76,7 @@ const REPLY_INPUT_BATCH_LIMIT: Duration = Duration::from_millis(8);
 const REPLY_INPUT_EVENT_LIMIT: usize = 256;
 const REPLY_PUMP_SLICE: Duration = Duration::from_millis(16);
 // Reply Enter is explicit intent, so do not inherit the measured 15-second focus-wait default.
+#[cfg(all(target_os = "macos", feature = "private-send"))]
 const REPLY_FOCUS_WAIT_SECS: u64 = 2;
 
 #[derive(Debug)]
@@ -1401,19 +1402,25 @@ fn select_watch_chat(source: &str, path: Option<PathBuf>, data_dir: &Path) -> Re
     io::stdin()
         .read_line(&mut input)
         .context("read selected chat")?;
-    let input = input.trim();
+    resolve_chat_selection(input.trim(), chats)
+}
+
+fn resolve_chat_selection(input: &str, chats: Vec<ChatSummary>) -> Result<ChatSummary> {
     if input.is_empty() {
         anyhow::bail!("no chat selected");
     }
-    if let Ok(number) = input.parse::<usize>() {
-        let index = selection_index(number, chats.len())
-            .with_context(|| format!("chat number {number} is out of range"))?;
+    let number = input.parse::<usize>().ok();
+    if let Some(index) = number.and_then(|number| selection_index(number, chats.len())) {
         return Ok(chats[index].clone());
     }
+    // A row number out of range may still be a chat_id: macOS chat ids are integers.
     chats
         .into_iter()
         .find(|chat| chat.chat_id == input)
-        .with_context(|| format!("no chat_id {input} in source"))
+        .with_context(|| match number {
+            Some(number) => format!("chat number {number} is out of range"),
+            None => format!("no chat_id {input} in source"),
+        })
 }
 
 fn find_chat_name(messages: &[RawMessage], chat_id: &str) -> Option<String> {
@@ -1520,8 +1527,10 @@ where
             "lazykatok: Enter send; Left/Right/Home/End or Ctrl-A/B/E/F move; Backspace/Delete, Ctrl-W/U/K edit; Up/Down/PgUp/PgDn scroll; Ctrl-C/Ctrl-D or /quit quit".to_string(),
         )?,
         ReplyCommand::Empty => {}
-        ReplyCommand::Ignored => terminal
-            .render_system("lazykatok: not sent; unknown slash command".to_string())?,
+        ReplyCommand::Ignored => {
+            terminal.restore_draft(&line)?;
+            terminal.render_system("lazykatok: not sent; unknown slash command".to_string())?;
+        }
     }
     Ok(false)
 }
@@ -2037,6 +2046,23 @@ mod chat_selection_tests {
     }
 
     #[test]
+    fn a_numeric_chat_id_selects_its_chat_instead_of_reading_as_an_index() {
+        // macOS chat ids are integers, so a typed chat_id parses as a number too.
+        let chats = vec![
+            summary("18200000000000001", "Older", Some("2026-01-01T09:00:00Z")),
+            summary("18200000000000002", "Newest", Some("2026-01-03T09:00:00Z")),
+        ];
+
+        let by_id = resolve_chat_selection("18200000000000001", chats.clone())
+            .expect("a listed chat_id selects that chat");
+        assert_eq!(by_id.chat_name, "Older");
+        let by_number = resolve_chat_selection("1", chats.clone()).expect("row 1");
+        assert_eq!(by_number.chat_name, "Newest");
+        assert!(resolve_chat_selection("3", chats.clone()).is_err());
+        assert!(resolve_chat_selection("", chats).is_err());
+    }
+
+    #[test]
     fn selection_ties_break_by_name_then_id() {
         let mut chats = vec![
             summary("chat-b", "Same Room", Some("2026-01-01T09:00:00Z")),
@@ -2182,6 +2208,38 @@ mod reply_terminal_tests {
             [
                 "lazykatok: 전송 중…",
                 "lazykatok: 이전 전송이 끝나기를 기다리는 중입니다"
+            ]
+        );
+    }
+
+    #[test]
+    fn reply_unknown_slash_command_keeps_the_draft_instead_of_discarding_it() {
+        let mut state = ReplyUiState::default();
+        let mut sends = ReplySendState::new();
+        let call_count = Rc::new(Cell::new(0));
+        let counted = Rc::clone(&call_count);
+        let mut sender = move |_request: ReplySendRequest| counted.set(counted.get() + 1);
+
+        for line in ["/sned 내일 3시에 봐요", "/send내일 3시에 봐요"] {
+            process_reply_action(
+                &mut state,
+                ReplyTerminalAction::Submit(line.to_string()),
+                Some("chat-synthetic-1"),
+                false,
+                Path::new("/tmp/lazykatok-synthetic"),
+                &mut sends,
+                &mut sender,
+            )
+            .expect("reject unknown slash command");
+
+            assert_eq!(call_count.get(), 0);
+            assert_eq!(state.take_draft(), line, "the typed line is not lost");
+        }
+        assert_eq!(
+            system_lines(&mut state),
+            [
+                "lazykatok: not sent; unknown slash command",
+                "lazykatok: not sent; unknown slash command"
             ]
         );
     }

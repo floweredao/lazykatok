@@ -1,77 +1,78 @@
 ---
 name: katok
-description: Search local KakaoTalk keyword, BM25, and EmbeddingGemma vector indexes through the katok CLI, list rooms, export chunks or transcripts, extract attachments, and prepare guarded message sends only after explicit user confirmation.
+description: Search local KakaoTalk keyword, BM25, and EmbeddingGemma vector indexes through the lazykatok CLI, list rooms, export chunks or transcripts, extract attachments, and prepare guarded message sends only after explicit user confirmation.
 ---
 
 # katok
 
-Use the `katok` CLI as the only execution surface. This skill stays thin: it checks readiness, calls CLI search commands, retrieves explicit chunks when needed, and summarizes results.
+Use the `lazykatok` CLI as the only execution surface. This skill stays thin: it checks readiness, calls CLI search commands, retrieves explicit chunks when needed, and summarizes results.
 
 ## Privacy Rules
 
 - Do not inspect local database internals from the skill.
 - Do not handle auth caches or decryption material.
-- Do not read KakaoTalk DB files directly. Use `katok sync --source macos --json`.
+- Do not read KakaoTalk DB files directly. Use `lazykatok sync --source macos --json`.
 - Search commands return minimal snippets and chunk ids by default.
 - Full chunk content is shown only when the user explicitly asks for an exact result, asks to open a result, or provides a chunk id.
 
 ## Commands
 
 ```bash
-export PATH="$HOME/.cargo/bin:$PATH"       # use when katok is not found after cargo install
-katok doctor --json
-katok permissions macos                   # opens Full Disk Access settings
-katok permissions macos --accessibility   # also opens Accessibility settings
-katok doctor --macos-probe --json        # explicit macOS permission/app-data probe
-katok sync --source macos --json          # reads live macOS KakaoTalk (needs Full Disk Access)
-katok sync --json                         # uses source_adapter from config
-katok index --json                        # builds local EmbeddingGemma vector index
-katok index --full --json                 # full rebuild instead of incremental
-katok wipe-index --yes                    # drops the local index
-katok source chats --source macos --json  # lists rooms with their chat ids
-katok search keyword "검색어" --json
-katok search bm25 "검색어" --json
-katok search semantic "지난 회의 보고서" --json
-katok search hybrid "지난 회의 보고서" --json   # BM25 + semantic, fused over parent windows
-katok chunk get <chunk-id> --json
-katok chunk get <chunk-id> --redact --json
-katok chunk context <chunk-id> --json
-katok chunk parent <chunk-id> --json
-katok chunks --chat <chat-id> --json      # every chunk in one room (metadata only)
-katok transcript --chat <chat-id> --json                      # exports one room to Markdown
-katok transcript --chat <chat-id> --since 2026-07-20 --json   # only messages at or after a time
-katok transcript --chat <chat-id> --out <dir> --json          # writes outside the data dir
-katok media get --chat <chat-id> --out <dir> --json   # photos, albums, videos, and files
-katok media get --chat <chat-id> --kind file --json   # only file attachments (zip, pdf, xlsx, ...)
-katok media get --chat <chat-id> --out <dir> --no-cdn --json   # local tiers only
-katok media backfill --dry-run --json   # what is still fetchable across every room
-katok media backfill --json             # save it before the presigned links expire
-katok send --chat <chat-id> --dry-run --json
+export PATH="$HOME/.cargo/bin:$PATH"       # use when lazykatok is not found after cargo install
+lazykatok doctor --json
+lazykatok permissions macos                   # opens Full Disk Access settings
+lazykatok permissions macos --accessibility   # also opens Accessibility settings
+lazykatok doctor --macos-probe --json        # explicit macOS permission/app-data probe
+lazykatok sync --source macos --json          # reads live macOS KakaoTalk (needs Full Disk Access)
+lazykatok sync --json                         # uses source_adapter from config
+lazykatok index --json                        # builds local EmbeddingGemma vector index
+lazykatok index --full --json                 # full rebuild instead of incremental
+lazykatok wipe-index --yes                    # drops the local index
+lazykatok source chats --source macos --json  # lists rooms with their chat ids
+lazykatok search keyword "검색어" --json
+lazykatok search bm25 "검색어" --json
+lazykatok search semantic "지난 회의 보고서" --json
+lazykatok search hybrid "지난 회의 보고서" --json   # BM25 + semantic, fused over parent windows
+lazykatok chunk get <chunk-id> --json
+lazykatok chunk get <chunk-id> --redact --json
+lazykatok chunk context <chunk-id> --json
+lazykatok chunk parent <chunk-id> --json
+lazykatok chunks --chat <chat-id> --json      # every chunk in one room (metadata only)
+lazykatok transcript --chat <chat-id> --json                      # exports one room to Markdown
+lazykatok transcript --chat <chat-id> --since 2026-07-20 --json   # only messages at or after a time
+lazykatok transcript --chat <chat-id> --out <dir> --json          # writes outside the data dir
+lazykatok media get --chat <chat-id> --out <dir> --json   # photos, albums, videos, and files
+lazykatok media get --chat <chat-id> --kind file --json   # only file attachments (zip, pdf, xlsx, ...)
+lazykatok media get --chat <chat-id> --out <dir> --no-cdn --json   # local tiers only
+lazykatok media backfill --dry-run --json   # what is still fetchable across every room
+lazykatok media backfill --json             # save it before the presigned links expire
+lazykatok send --chat <chat-id> --dry-run --json
 ```
 
 For synthetic QA only:
 
 ```bash
-katok sync --source fixture tests/fixtures/kakao/replies.jsonl --json
-KATOK_EMBEDDER=local-test katok index --json
-KATOK_EMBEDDER=mock katok index --json
+lazykatok --data-dir <tmp> sync --source fixture tests/fixtures/kakao/replies.jsonl --json
+KATOK_EMBEDDER=local-test lazykatok --data-dir <tmp> index --json
+KATOK_EMBEDDER=mock lazykatok --data-dir <tmp> index --json
 ```
 
-Synthetic runs must be isolated with the `--data-dir <tmp>` flag. There is no `KATOK_DATA_DIR`
+Synthetic runs must be isolated with the `--data-dir <tmp>` flag. It is a top-level flag, so it goes
+before the subcommand; `lazykatok sync --data-dir <tmp>` is rejected. There is no `KATOK_DATA_DIR`
 environment variable; setting one is silently ignored and the run writes into the real archive.
 
 ## Operating Pattern
 
-1. If `katok` is not found after install, run `export PATH="$HOME/.cargo/bin:$PATH"` and retry.
-2. If macOS permission setup is needed, run `katok permissions macos` so the user can grant Full Disk Access in System Settings.
-3. Run `katok doctor --json` before search to inspect freshness without triggering macOS app-data permission prompts.
+1. If `lazykatok` is not found after install, run `export PATH="$HOME/.cargo/bin:$PATH"` and retry.
+2. If macOS permission setup is needed, run `lazykatok permissions macos` so the user can grant Full Disk Access in System Settings.
+3. Run `lazykatok doctor --json` before search to inspect freshness without triggering macOS app-data permission prompts.
 4. Inspect the `freshness` section from `doctor --json` before search.
-5. Run `katok sync --source macos --json` when `freshness.recommendation.sync_before_search` is `true`, when the user asks for recent messages, or when search freshness matters.
-6. Run `katok index --json` before semantic search when `freshness.recommendation.index_before_semantic_search` is `true` or after a sync that should affect vector search.
-7. Use `katok search keyword ...`, `katok search bm25 ...`, `katok search semantic ...`, and `katok search hybrid ...` for discovery.
+5. Run `lazykatok sync --source macos --json` when `freshness.recommendation.sync_before_search` is `true`, when the user asks for recent messages, or when search freshness matters.
+6. Run `lazykatok index --json` before semantic search when `freshness.recommendation.index_before_semantic_search` is `true` or after a sync that should affect vector search.
+7. Use `lazykatok search keyword ...`, `lazykatok search bm25 ...`, `lazykatok search semantic ...`, and `lazykatok search hybrid ...` for discovery.
    - A search returns a global top-k across rooms (default 10). For a person or topic that may occur across many rooms, raise `--limit` (for example 100) and group the returned hits by the stable `chat_id`; a room outside the first 10 is not an engine omission.
-8. Use `katok chunk get ...` only for explicit retrieval.
-9. Run `katok doctor --macos-probe --json` only for setup or permission diagnostics, because it may trigger a macOS "access data from other apps" prompt.
+8. Use `lazykatok chunk get ...` only for explicit retrieval.
+9. Run `lazykatok doctor --macos-probe --json` only for setup or permission diagnostics, because it may trigger a macOS "access data from other apps" prompt.
 
 ## Message Sending Safety
 
@@ -82,7 +83,7 @@ asks to send or stage a message.
 - Never infer send permission from a search, summary, drafting, or setup request.
 - Never pass `--accept-use-policy` until the user has explicitly confirmed the
   exact room and final message or image in the current interaction.
-- Run `katok send --chat <chat-id> --dry-run --json` first.
+- Run `lazykatok send --chat <chat-id> --dry-run --json` first.
 - Prefer `--chat` over a room name; names are not unique.
 - Do not automate loops, schedules, recipient lists, bulk delivery, or retries.
 - Do not assist spam, impersonation, account theft, post-refusal contact,
@@ -92,15 +93,15 @@ asks to send or stage a message.
 - Image paste UI failures (webp confirm miss → PNG once, etc.): see
   [`katok-send` Troubleshooting](../katok-send/SKILL.md#troubleshooting).
 
-`--source macos` reads the live macOS KakaoTalk SQLCipher database locally in Rust; the terminal must have Full Disk Access to `~/Library/Containers/com.kakao.KakaoTalkMac/`.
+`--source macos` reads the live macOS KakaoTalk SQLCipher database locally in Rust; the terminal must have Full Disk Access to `~/Library/Containers/com.kakao.KakaoTalkMac/`. The store can also live in `~/Library/Application Support/com.kakao.KakaoTalkMac/`; both roots are scanned and the most recently modified copy of each database wins.
 
-Use `katok chunk context <chunk-id> --json` to inspect the immediate previous and next micro chunks in the same chat. Use `katok chunk parent <chunk-id> --json` to jump from a micro chunk to its larger 5-minute same-chat window parent chunk. Semantic and hybrid search return parent-window hits with `child_chunk_ids`; use these chunk commands to navigate from broad context back to exact messages.
+Use `lazykatok chunk context <chunk-id> --json` to inspect the immediate previous and next micro chunks in the same chat. Use `lazykatok chunk parent <chunk-id> --json` to jump from a micro chunk to its larger 5-minute same-chat window parent chunk. Semantic and hybrid search return parent-window hits with `child_chunk_ids`; use these chunk commands to navigate from broad context back to exact messages.
 
-`katok search hybrid` fuses the BM25 and semantic rankings with reciprocal rank fusion (k=60). BM25 ranks micro chunks and semantic search ranks parent windows, so each BM25 chunk is counted as a hit on the window(s) containing it before fusion; a window holding several matching chunks counts once, at its best chunk's rank. Each input contributes `3 × --limit` candidates. Hits are parent windows (`unit: parent_window`, `ranker: hybrid`), like semantic search. It needs a current semantic index and fails with the semantic search error (`semantic_index_missing`, `semantic_index_stale`, ...) rather than falling back to keyword-only hits.
+`lazykatok search hybrid` fuses the BM25 and semantic rankings with reciprocal rank fusion (k=60). BM25 ranks micro chunks and semantic search ranks parent windows, so each BM25 chunk is counted as a hit on the window(s) containing it before fusion; a window holding several matching chunks counts once, at its best chunk's rank. Each input contributes `3 × --limit` candidates. Hits are parent windows (`unit: parent_window`, `ranker: hybrid`), like semantic search. It needs a current semantic index and fails with the semantic search error (`semantic_index_missing`, `semantic_index_stale`, ...) rather than falling back to keyword-only hits.
 
-`katok index` runs the local `embeddinggemma-300m-q4` embedder in-process by default. Do not ask the user to start a Python, Jina, TEI, or local HTTP embedding server. Use `KATOK_EMBEDDER=mock` only for synthetic QA and `KATOK_EMBEDDER=local-test` only when you need deterministic local vector tests without downloading the model.
+`lazykatok index` runs the local `embeddinggemma-300m-q4` embedder in-process by default. Do not ask the user to start a Python, Jina, TEI, or local HTTP embedding server. Use `KATOK_EMBEDDER=mock` only for synthetic QA and `KATOK_EMBEDDER=local-test` only when you need deterministic local vector tests without downloading the model.
 
-The index never follows the KakaoTalk database on its own, so a search only ever reflects the last sync. Run `katok sync --source macos --json` before the first query of a session and before any question about recent messages. After sync, doctor compares the archive revision with the committed semantic generation and requests indexing when they differ; semantic search also refuses stale or orphaned generations instead of silently searching them. Freshness also depends on KakaoTalk itself running (`pgrep -x KakaoTalk`), because the source database receives new messages only while the app is up.
+The index never follows the KakaoTalk database on its own, so a search only ever reflects the last sync. Run `lazykatok sync --source macos --json` before the first query of a session and before any question about recent messages. After sync, doctor compares the archive revision with the committed semantic generation and requests indexing when they differ; semantic search also refuses stale or orphaned generations instead of silently searching them. Freshness also depends on KakaoTalk itself running (`pgrep -x KakaoTalk`), because the source database receives new messages only while the app is up.
 
 Sync is cheap enough to run often because only chats whose messages changed have their chunk tails recomputed. Three runs still pay the full cost: the first sync on an empty archive, the first sync after `chunk_gap_group_seconds` or `chunk_gap_direct_seconds` changes, and the first sync after an upgrade that bumps the chunker version, which includes the first run against an archive written before the version was recorded. Each of these invalidates every stored chunk once, after which sync returns to the incremental path. The payload reports `rebuilt_chats` and a `timings_ms` breakdown (`read_source`, `upsert_messages`, `rebuild_chunks`), so a slow run can be attributed to a stage instead of guessed at.
 
@@ -108,8 +109,8 @@ Sync is cheap enough to run often because only chats whose messages changed have
 
 - Most group rooms come back as a `chat-<id>` placeholder rather than a real title, because the source database does not always carry the room name. Grepping room names will not find them.
 - To locate a room whose title is a placeholder, search for a term used inside it and group the hits by `chat_name`. The `chat_id` holding the most hits is that room. Each hit carries `chunk_id`, `chat_name`, `sender_nickname`, `started_at`, and `snippet`.
-- `katok chunks --chat <chat-id>` returns chunk metadata only, never `text`. To export a whole room, collect the chunk ids and run `katok chunk get` per chunk, then assemble in timestamp order.
-- `katok chunk get --redact` masks the entire `text`, not only the PII inside it. Use it for a line you must quote, not for a readable export.
+- `lazykatok chunks --chat <chat-id>` returns chunk metadata only, never `text`. To export a whole room, use `lazykatok transcript --chat <chat-id>`, or collect the chunk ids and run `lazykatok chunk get` per chunk, then assemble in timestamp order.
+- `lazykatok chunk get --redact` masks the entire `text`, not only the PII inside it. Use it for a line you must quote, not for a readable export.
 - KakaoTalk system feed entries (invite, join, leave) arrive as JSON strings such as `{"inviter":...}` or `{"member":...,"feedType":N}`. Filter them out of anything a person will read.
 
 ## Deleted Messages
@@ -118,18 +119,18 @@ Sync only upserts, so a message removed upstream stays in the archive unless it
 is reconciled away:
 
 ```
-katok sync --prune-preview --json   # what the source no longer has; deletes nothing
-katok sync --prune-deleted --json   # actually remove it
+lazykatok sync --source macos --prune-preview --json   # what the source no longer has; deletes nothing
+lazykatok sync --source macos --prune-deleted --json   # actually remove it
 ```
 
 Only the time range the source still reports for a chat is considered. KakaoTalk
 prunes its own database and outliving that is the reason this archive exists, so
 messages older than the source's reach are kept, and a chat the source did not
-mention at all is skipped. Preview before deleting — katok cannot undo it.
+mention at all is skipped. Preview before deleting — lazykatok cannot undo it.
 
 ## Media Attachments
 
-`katok media get --chat <chat-id> --out <dir>` resolves each media message through four tiers in order: the decrypted local cache, a GET of the attachment's own presigned CDN URL verified by SHA-1, the decrypted `.thm` thumbnail, and finally a metadata stub. That CDN GET is the only network access anywhere in the CLI, and `--no-cdn` disables it so resolution stays entirely local.
+`lazykatok media get --chat <chat-id> --out <dir>` resolves each media message through four tiers in order: the decrypted local cache, a GET of the attachment's own presigned CDN URL verified by SHA-1, the decrypted `.thm` thumbnail, and finally a metadata stub. Apart from an OpenAI-compatible embedding endpoint the user configured and the local model download on the first `lazykatok index`, that CDN GET is the only network access in the CLI, and `--no-cdn` disables it so resolution stays entirely local.
 
 Photos (type 2), albums (type 27), videos (type 3), and generic file attachments (type 18) are all covered; `--kind photo|video|file` narrows a run and defaults to every kind. Photos and albums read the `.img` cache; videos read the `.vid` cache, whose filename stem uses a `v` key prefix instead of `p`. For those, the output extension is sniffed from the decoded body, so a video lands as `.mp4`.
 
@@ -161,7 +162,8 @@ Run it on a schedule if attachments matter. A backfill started after the window 
 
 ## Related Skills
 
-`katok send` is documented separately in `skills/katok-send/SKILL.md`. It is the
+`lazykatok send` is documented separately in `skills/katok-send/SKILL.md`. It exists
+only in macOS builds with the default `private-send` feature. It is the
 only subcommand that writes, and it does so by driving the running official
 KakaoTalk app's UI rather than a Kakao remote private protocol or API.
 

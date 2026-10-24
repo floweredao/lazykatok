@@ -62,6 +62,10 @@ pub fn discover_database_files(dir: &Path) -> Vec<PathBuf> {
 /// modified copy of each filename, including its nonempty `-wal` sidecar.
 /// Commits can advance the WAL without modifying the main file. Empty WALs
 /// and `-shm` files do not indicate newer database content.
+///
+/// `<name>` and `<name>.db` count as one filename, as they do to auth. Kept
+/// apart, a copy left under the other spelling was read beside the live one,
+/// and the reader keeps whichever copy of a message it sees first.
 pub fn discover_databases(home: &Path) -> Vec<PathBuf> {
     let mut newest: HashMap<String, (SystemTime, PathBuf)> = HashMap::new();
     for dir in store_dirs(home) {
@@ -70,7 +74,8 @@ pub fn discover_databases(home: &Path) -> Vec<PathBuf> {
                 continue;
             };
             let modified = database_modified(&path);
-            match newest.entry(name.to_string()) {
+            let store = name.strip_suffix(".db").unwrap_or(name);
+            match newest.entry(store.to_string()) {
                 Entry::Occupied(mut slot) => {
                     if modified > slot.get().0 {
                         slot.insert((modified, path));
@@ -271,6 +276,28 @@ mod tests {
         // A commit that only reaches the WAL is.
         std::fs::write(dir.join(format!("{name}-wal")), b"frame").expect("write wal");
         assert_ne!(before, store_stamp(home.path()));
+    }
+
+    #[test]
+    fn a_db_suffixed_twin_is_the_same_store_as_its_bare_name() {
+        // Auth treats `<derived>` and `<derived>.db` as one derived database, so
+        // an abandoned copy under the other spelling must lose to the live one
+        // rather than be read beside it, where whichever path sorts first wins
+        // every message both copies hold.
+        for live_inside in [false, true] {
+            for live_suffix in ["", ".db"] {
+                let home = tempfile::tempdir().expect("temp home");
+                let stale_suffix = if live_suffix.is_empty() { ".db" } else { "" };
+                let (live_dir, stale_dir) = if live_inside {
+                    (container_dir(home.path()), app_support_dir(home.path()))
+                } else {
+                    (app_support_dir(home.path()), container_dir(home.path()))
+                };
+                write_db(&stale_dir, &format!("{}{stale_suffix}", db_name()), 1_000);
+                let live = write_db(&live_dir, &format!("{}{live_suffix}", db_name()), 2_000);
+                assert_eq!(discover_databases(home.path()), vec![live]);
+            }
+        }
     }
 
     #[test]

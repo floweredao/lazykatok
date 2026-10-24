@@ -5,7 +5,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use chrono::{TimeZone, Utc};
+use chrono::{DateTime, TimeZone, Utc};
+use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OpenFlags};
 use sha2::{Digest, Sha256};
 
@@ -372,6 +373,28 @@ fn coerce_log_id(value: &serde_json::Value) -> Option<i64> {
     }
 }
 
+/// `sentAt` as a send time, or `None` when the row carries none: the column's
+/// 0 default, a negative value, NaN, or an instant chrono cannot represent.
+fn send_time(sent_at: f64) -> Option<DateTime<Utc>> {
+    if sent_at.is_nan() || sent_at < 1.0 {
+        return None;
+    }
+    Utc.timestamp_opt(sent_at as i64, 0).single()
+}
+
+/// An optional metadata column (`supplement`, `attachment`) as text.
+///
+/// These only ever yield a reply link, so a value that cannot be read as text
+/// must cost that link and nothing more. Read strictly, a non-UTF-8 BLOB failed
+/// the whole row and dropped the message — which `--prune-deleted` then took for
+/// a deletion upstream. A BLOB that holds UTF-8 is read like TEXT.
+fn metadata_text(row: &rusqlite::Row<'_>, index: usize) -> Option<String> {
+    match row.get_ref(index).ok()? {
+        ValueRef::Text(bytes) | ValueRef::Blob(bytes) => String::from_utf8(bytes.to_vec()).ok(),
+        _ => None,
+    }
+}
+
 fn unreadable_database_warning() -> &'static str {
     "lazykatok: skipping unreadable KakaoTalk db"
 }
@@ -417,9 +440,9 @@ fn read_one(
             let msg_type: i64 = row.get(3)?;
             let text: String = row.get(4)?;
             // sentAt is epoch seconds; tolerate a float column by reading f64.
-            let sent_at: f64 = row.get::<_, f64>(5).unwrap_or(0.0);
-            let supplement: Option<String> = row.get(6)?;
-            let attachment: Option<String> = row.get(7)?;
+            let sent_at: Option<f64> = row.get::<_, f64>(5).ok();
+            let supplement = metadata_text(row, 6);
+            let attachment = metadata_text(row, 7);
             Ok((
                 chat_id, log_id, author_id, msg_type, text, sent_at, supplement, attachment,
             ))
@@ -461,14 +484,13 @@ fn read_one(
                 .unwrap_or_else(|| format!("user-{author_id}"))
         };
 
-        let timestamp = Utc
-            .timestamp_opt(sent_at as i64, 0)
-            .single()
-            .unwrap_or_else(|| {
-                Utc.timestamp_opt(0, 0)
-                    .single()
-                    .expect("epoch zero is valid")
-            });
+        // No send time is no message to archive. Dated to the epoch instead, the row
+        // stretched its chat's source span back to 1970, and `--prune-deleted` then
+        // deleted every archived message the store had already pruned.
+        let Some(timestamp) = sent_at.and_then(send_time) else {
+            skipped_rows += 1;
+            continue;
+        };
 
         let message_type = if msg_type == 1 {
             "text".to_string()

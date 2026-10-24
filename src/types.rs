@@ -68,7 +68,8 @@ impl Serialize for SyncReport {
 #[derive(Debug, Clone, Serialize)]
 pub struct TouchedChat {
     pub chat_id: String,
-    /// RFC3339 timestamp of the earliest inserted-or-updated message in this chat.
+    /// RFC3339 timestamp of the earliest inserted-or-updated message in this chat. A message
+    /// whose timestamp changed counts at the earlier of its old and new positions.
     pub earliest_changed_timestamp: String,
     /// Message id of that same earliest-changed message. Currently unread: the
     /// gap-derived cut guarantees a >=300s separation at `P`, so `started_at >= P`
