@@ -341,7 +341,7 @@ pub(crate) enum SourceCommand {
 
 #[derive(Subcommand)]
 pub(crate) enum MediaCommand {
-    /// Extract media from one room: photos, albums, videos, and file attachments.
+    /// Extract media from one room: photos, albums, videos, file attachments, and emoticons.
     Get {
         /// KakaoTalk chatId to read media messages from.
         #[arg(long)]

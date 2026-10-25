@@ -41,7 +41,7 @@ lazykatok chunks --chat <chat-id> --json      # every chunk in one room (metadat
 lazykatok transcript --chat <chat-id> --json                      # exports one room to Markdown
 lazykatok transcript --chat <chat-id> --since 2026-07-20 --json   # only messages at or after a time
 lazykatok transcript --chat <chat-id> --out <dir> --json          # writes outside the data dir
-lazykatok media get --chat <chat-id> --out <dir> --json   # photos, albums, videos, and files
+lazykatok media get --chat <chat-id> --out <dir> --json   # photos, albums, videos, files, and emoticons
 lazykatok media get --chat <chat-id> --kind file --json   # only file attachments (zip, pdf, xlsx, ...)
 lazykatok media get --chat <chat-id> --out <dir> --no-cdn --json   # local tiers only
 lazykatok media backfill --dry-run --json   # what is still fetchable across every room
@@ -132,7 +132,7 @@ mention at all is skipped. Preview before deleting — lazykatok cannot undo it.
 
 `lazykatok media get --chat <chat-id> --out <dir>` resolves each media message through four tiers in order: the decrypted local cache, a GET of the attachment's own presigned CDN URL verified by SHA-1, the decrypted `.thm` thumbnail, and finally a metadata stub. Apart from an OpenAI-compatible embedding endpoint the user configured and the local model download on the first `lazykatok index`, that CDN GET is the only network access in the CLI, and `--no-cdn` disables it so resolution stays entirely local.
 
-Photos (type 2), albums (type 27), videos (type 3), and generic file attachments (type 18) are all covered; `--kind photo|video|file` narrows a run and defaults to every kind. Photos and albums read the `.img` cache; videos read the `.vid` cache, whose filename stem uses a `v` key prefix instead of `p`. For those, the output extension is sniffed from the decoded body, so a video lands as `.mp4`.
+Photos (type 2), albums (type 27), videos (type 3), and generic file attachments (type 18) are all covered, as are emoticons and stickers (types 12, 20, 25); `--kind photo|video|file|emoticon` narrows a run and defaults to every kind. Photos and albums read the `.img` cache; videos read the `.vid` cache, whose filename stem uses a `v` key prefix instead of `p`. For those, the output extension is sniffed from the decoded body, so a video lands as `.mp4`. An emoticon has no local tier and no `cs`: its image is fetched from the public catalog host (`https://item.kakaocdn.net/dw/<path>`) by the attachment's `path`, and stored only when the body sniffs as an image.
 
 **A file attachment is one message type covering every extension** — zip, pdf, xlsx, hwp, pptx, csv, mp3 and the rest — so nothing needs adding per format.
 
