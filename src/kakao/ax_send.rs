@@ -1454,6 +1454,14 @@ fn open_row_by_click(
     // aimed at screen coordinates, so anything that activates in between would
     // receive it instead.
     front_then(pid, || -> Result<(), SendError> {
+        // Activating KakaoTalk restores its own window order, which puts the last-used chat
+        // window back above the list. Raise the list again now that the app is in front, or
+        // the double-click lands in an overlapping chat window instead of on the row.
+        if let Some(main) = main_window(windows) {
+            let raise = CFString::new(ACTION_RAISE);
+            unsafe { AXUIElementPerformAction(main.as_raw(), raise.as_concrete_TypeRef()) };
+            std::thread::sleep(Duration::from_millis(150));
+        }
         for click in 1..=2 {
             for kind in [CGEventType::LeftMouseDown, CGEventType::LeftMouseUp] {
                 let ev =
@@ -1953,13 +1961,16 @@ fn press_send_button(window: AXUIElementRef) -> bool {
 /// `open_row_by_click`. Returns `false` when the button or its geometry cannot be read, or the
 /// frontmost check fails, so the caller's error path stays reachable.
 fn click_send_button(window: AXUIElementRef, pid: i32) -> bool {
-    let mut button: Option<AXUIElementRef> = None;
-    fn search(el: AXUIElementRef, found: &mut Option<AXUIElementRef>) {
+    // The button's geometry is read inside the search, while the child reference that owns it
+    // is still alive. Keeping the raw element past the loop would read a released AX object
+    // (CFGetTypeID on freed memory traps with SIGTRAP).
+    let mut button: Option<Option<CGRect>> = None;
+    fn search(el: AXUIElementRef, found: &mut Option<Option<CGRect>>) {
         if found.is_some() {
             return;
         }
         if role_of(el) == ROLE_BUTTON && attr_string(el, ATTR_TITLE).as_deref() == Some("Send") {
-            *found = Some(el);
+            *found = Some(frame_of(el));
             return;
         }
         for child in child_elements(el, ATTR_CHILDREN) {
@@ -1970,10 +1981,7 @@ fn click_send_button(window: AXUIElementRef, pid: i32) -> bool {
         }
     }
     search(window, &mut button);
-    let Some(button) = button else {
-        return false;
-    };
-    let Some(rect) = frame_of(button) else {
+    let Some(Some(rect)) = button else {
         return false;
     };
     let center = CGPoint::new(
