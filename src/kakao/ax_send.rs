@@ -1210,13 +1210,21 @@ pub fn send_image_to_open_window(
 /// The compose box is the text area inside one of the window's scroll areas; the other scroll
 /// area holds the transcript table.
 fn compose_box(window: AXUIElementRef) -> Option<AxRef> {
+    // The compose box is the bottom-most text area. Taking the first one in child order is
+    // wrong once KakaoTalk shows its new-message preview strip: that strip is also a scroll
+    // area holding a text area, it comes earlier in the children, and a send into it leaves
+    // "message stayed in the input box" while the real compose box stays empty.
     child_elements(window, ATTR_CHILDREN)
         .into_iter()
         .filter(|c| role_of(c.as_raw()) == ROLE_SCROLL_AREA)
-        .find_map(|sa| {
+        .filter_map(|sa| {
             child_elements(sa.as_raw(), ATTR_CHILDREN)
                 .into_iter()
                 .find(|c| role_of(c.as_raw()) == ROLE_TEXT_AREA)
+        })
+        .max_by(|a, b| {
+            let y = |el: &AxRef| frame_of(el.as_raw()).map_or(f64::MIN, |f| f.origin.y);
+            y(a).total_cmp(&y(b))
         })
 }
 
