@@ -8,6 +8,8 @@
   `--kind emoticon`. The image comes from the public catalog host by the
   attachment's `path`, which must be a plain file name; with no `cs` to check,
   the body is stored only when it sniffs as an image.
+- The reader keeps emoticon rows that carry no text. They were dropped with
+  every other empty row, so a bare emoticon never reached `watch` or the archive.
 
 ### Doctor
 
