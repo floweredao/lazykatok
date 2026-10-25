@@ -423,9 +423,11 @@ fn read_one(
 
     let mut stmt = conn
         .prepare(
-            "SELECT chatId, logId, authorId, type, message, sentAt, supplement, attachment
+            // An emoticon row (types 12, 20, 25) often has no text at all, yet it
+            // is a message the user sent; dropping it hid every bare emoticon.
+            "SELECT chatId, logId, authorId, type, COALESCE(message, ''), sentAt, supplement, attachment
              FROM NTChatMessage
-             WHERE message IS NOT NULL AND message <> ''",
+             WHERE (message IS NOT NULL AND message <> '') OR type IN (12, 20, 25)",
         )
         .map_err(Error::Sql)?;
 
