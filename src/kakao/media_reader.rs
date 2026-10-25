@@ -23,6 +23,10 @@ const VIDEO_MESSAGE_TYPE: i64 = 3;
 /// A generic file attachment: zip, pdf, xlsx, hwp, and every other extension
 /// KakaoTalk lets a user attach. One message type covers them all.
 const FILE_MESSAGE_TYPE: i64 = 18;
+/// Emoticon message types: static (12), animated (20), and animated GIF (25).
+const EMOTICON_MESSAGE_TYPES: [i64; 3] = [12, 20, 25];
+/// Public KakaoTalk catalog host that serves an emoticon by its `path`.
+const EMOTICON_CDN_BASE: &str = "https://item.kakaocdn.net/dw/";
 
 const IMAGE_CACHE_EXT: &str = ".img";
 const VIDEO_CACHE_EXT: &str = ".vid";
@@ -64,7 +68,20 @@ fn kind_message_types(kind: &MediaKind) -> Vec<i64> {
         MediaKind::Photo => vec![PHOTO_MESSAGE_TYPE, ALBUM_MESSAGE_TYPE],
         MediaKind::Video => vec![VIDEO_MESSAGE_TYPE],
         MediaKind::File => vec![FILE_MESSAGE_TYPE],
+        MediaKind::Emoticon => EMOTICON_MESSAGE_TYPES.to_vec(),
     }
+}
+
+/// Catalog URL for an emoticon `path`, or `None` when the path is not a plain
+/// file name. The path comes from an attachment anyone can send, so only the
+/// characters a catalog file name uses are accepted.
+fn emoticon_url(path: &str) -> Option<String> {
+    let plain = !path.is_empty()
+        && !path.starts_with('.')
+        && path
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    plain.then(|| format!("{EMOTICON_CDN_BASE}{path}"))
 }
 
 pub fn read_media_frames_with_options(
@@ -305,6 +322,26 @@ fn frame_inputs(row: MediaRow) -> Vec<MediaFrameInput> {
         }];
     }
 
+    if EMOTICON_MESSAGE_TYPES.contains(&row.msg_type) {
+        return vec![MediaFrameInput {
+            kind: MediaKind::Emoticon,
+            log_id: row.log_id,
+            idx: 0,
+            width: object_i64(&attachment, "width").or_else(|| object_i64(&attachment, "w")),
+            height: object_i64(&attachment, "height").or_else(|| object_i64(&attachment, "h")),
+            checksum_sha1: None,
+            size_bytes: object_i64(&attachment, "s").or_else(|| object_i64(&attachment, "size")),
+            filename: None,
+            full_stem: String::new(),
+            full_ext: "",
+            thumb_stem: String::new(),
+            output_stem: row.log_id.to_string(),
+            sender: Some(row.author_id.to_string()),
+            sent_at: Some(row.sent_at),
+            cdn_url: object_string(&attachment, "path").and_then(|path| emoticon_url(&path)),
+        }];
+    }
+
     let is_video = row.msg_type == VIDEO_MESSAGE_TYPE;
     vec![MediaFrameInput {
         kind: if is_video {
@@ -431,6 +468,34 @@ mod tests {
         assert_eq!(frames[1].checksum_sha1.as_deref(), Some("b"));
         assert_eq!(frames[1].cdn_url.as_deref(), Some("u1"));
         assert_eq!(frames[1].output_stem, "900_1");
+    }
+
+    #[test]
+    fn emoticon_builds_catalog_url_and_refuses_unsafe_paths() {
+        let row = |path: &str| MediaRow {
+            log_id: 77,
+            author_id: 1,
+            msg_type: 20,
+            sent_at: 1,
+            attachment: Some(format!(r#"{{"path":"{path}","width":360,"height":360}}"#)),
+        };
+
+        let frames = frame_inputs(row("1000001.emot_002.webp"));
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].kind, MediaKind::Emoticon);
+        assert_eq!(
+            frames[0].cdn_url.as_deref(),
+            Some("https://item.kakaocdn.net/dw/1000001.emot_002.webp")
+        );
+        assert_eq!(frames[0].width, Some(360));
+
+        for unsafe_path in ["../x.webp", "a/b.webp", "x.webp?u=1", ""] {
+            assert_eq!(
+                frame_inputs(row(unsafe_path))[0].cdn_url,
+                None,
+                "{unsafe_path}"
+            );
+        }
     }
 
     #[test]

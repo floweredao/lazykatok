@@ -31,22 +31,31 @@ pub enum MediaKind {
     Photo,
     Video,
     File,
+    /// A KakaoTalk emoticon or sticker, static or animated. Its image is a
+    /// public catalog asset rather than private media.
+    Emoticon,
 }
 
 impl MediaKind {
-    pub const ALL: [MediaKind; 3] = [MediaKind::Photo, MediaKind::Video, MediaKind::File];
+    pub const ALL: [MediaKind; 4] = [
+        MediaKind::Photo,
+        MediaKind::Video,
+        MediaKind::File,
+        MediaKind::Emoticon,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Photo => "photo",
             Self::Video => "video",
             Self::File => "file",
+            Self::Emoticon => "emoticon",
         }
     }
 
     /// Whether this kind is ever written to the local KakaoTalk media cache.
     fn has_local_cache(self) -> bool {
-        !matches!(self, Self::File)
+        !matches!(self, Self::File | Self::Emoticon)
     }
 }
 
@@ -58,8 +67,9 @@ impl std::str::FromStr for MediaKind {
             "photo" | "image" => Ok(Self::Photo),
             "video" => Ok(Self::Video),
             "file" => Ok(Self::File),
+            "emoticon" | "sticker" => Ok(Self::Emoticon),
             other => Err(format!(
-                "unknown media kind '{other}'; use photo, video, or file"
+                "unknown media kind '{other}'; use photo, video, file, or emoticon"
             )),
         }
     }
@@ -509,6 +519,45 @@ where
                     let name = known_output_name(frame)
                         .unwrap_or_else(|| format!("{}{}", frame.output_stem, image_ext(&body)));
                     let out = options.output_dir.join(name);
+                    write_image(&body, &out)?;
+                    let reason =
+                        join_reasons(why.iter().map(String::as_str).chain(["cdn-fetched"]));
+                    return Ok((
+                        record(frame, MediaTier::Cdn, &reason, Some(out), &body),
+                        errors,
+                    ));
+                }
+                Err(err) => {
+                    why.push("cdn-failed".to_string());
+                    errors.push(error_record(frame, "cdn", &redact_url(url), err));
+                }
+            }
+        } else if frame.kind == MediaKind::Emoticon {
+            // An emoticon carries no `cs`, but its URL is built from the catalog
+            // path, not taken from the attachment, and the body is a public
+            // asset. It is stored only when it sniffs as an image.
+            if options.dry_run {
+                let reason =
+                    join_reasons(why.iter().map(String::as_str).chain(["cdn-would-fetch"]));
+                return Ok((
+                    record(frame, MediaTier::Planned, &reason, None, &[]),
+                    errors,
+                ));
+            }
+            match fetcher(url, options.cdn_timeout, options.max_fetch_bytes).and_then(|body| {
+                if image_ext(&body) == ".bin" {
+                    return Err(Error::Kakao(
+                        "emoticon body is not a recognised image".to_string(),
+                    ));
+                }
+                Ok(body)
+            }) {
+                Ok(body) => {
+                    let out = options.output_dir.join(format!(
+                        "{}{}",
+                        frame.output_stem,
+                        image_ext(&body)
+                    ));
                     write_image(&body, &out)?;
                     let reason =
                         join_reasons(why.iter().map(String::as_str).chain(["cdn-fetched"]));
