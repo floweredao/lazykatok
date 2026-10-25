@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Media
+
+- `media get` extracts emoticons and stickers (message types 12, 20, 25) as
+  `--kind emoticon`. The image comes from the public catalog host by the
+  attachment's `path`, which must be a plain file name; with no `cs` to check,
+  the body is stored only when it sniffs as an image.
+
 ### Doctor
 
 - `doctor --json` now recommends `sync` when the archive file is missing even
