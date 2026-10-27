@@ -354,6 +354,21 @@ impl SendContext {
     }
 }
 
+/// After writing `intended` into the compose box, the box must hold it, or be empty because
+/// KakaoTalk delivered it on the write. Anything else means the write did not take — a box that
+/// already holds a draft keeps it and silently ignores AXValue — and every later step (Enter,
+/// AXPress, the Send-button click) would deliver that other text and report success.
+fn require_written_compose(
+    room: &str,
+    intended: &str,
+    value: Option<&str>,
+) -> Result<(), SendError> {
+    match value {
+        Some(v) if v == intended || v.is_empty() => Ok(()),
+        _ => Err(SendError::ComposeKeptOtherText(room.to_string())),
+    }
+}
+
 /// Holds the screen for as long as an activating step needs it.
 ///
 /// Dropping it restores the user's application first and only then lifts the
@@ -587,6 +602,11 @@ pub enum SendError {
     BackgroundComposeUnreadable(String),
     #[error("'{0}'s compose text changed before the non-activating Enter; Enter was not posted")]
     BackgroundComposeChanged(String),
+    #[error(
+        "'{0}'s compose box kept text other than this message (usually a leftover draft, which \
+         KakaoTalk keeps over a write); nothing was sent. Clear the box in KakaoTalk and retry"
+    )]
+    ComposeKeptOtherText(String),
     #[error("could not create the Enter key event")]
     KeyEventFailed,
     #[error("message stayed in the input box; KakaoTalk did not accept Enter")]
@@ -1854,11 +1874,9 @@ pub fn send_to_open_window(
     // Do not post Enter on faith. Another actor or KakaoTalk itself may have changed the value
     // after AXValue was set. Strict mode requires an exact last-moment match and never retries
     // this send automatically when the check or later acceptance observation fails.
-    ctx.require_intended_background_compose(
-        &target.name,
-        text,
-        attr_string(compose.as_raw(), ATTR_VALUE).as_deref(),
-    )?;
+    let written = attr_string(compose.as_raw(), ATTR_VALUE);
+    ctx.require_intended_background_compose(&target.name, text, written.as_deref())?;
+    require_written_compose(&target.name, text, written.as_deref())?;
 
     // KakaoTalk clears the compose box once it accepts the message; poll rather than sleep a
     // fixed amount so a fast machine is not penalised and a slow one is not called a failure.
@@ -1953,13 +1971,16 @@ fn press_send_button(window: AXUIElementRef) -> bool {
 /// `open_row_by_click`. Returns `false` when the button or its geometry cannot be read, or the
 /// frontmost check fails, so the caller's error path stays reachable.
 fn click_send_button(window: AXUIElementRef, pid: i32) -> bool {
-    let mut button: Option<AXUIElementRef> = None;
-    fn search(el: AXUIElementRef, found: &mut Option<AXUIElementRef>) {
+    // The match is held as a retained `AxRef`: children from `child_elements` are released at
+    // the end of each loop iteration, so keeping only the raw pointer left `frame_of` reading a
+    // freed element, which CoreFoundation traps on (SIGTRAP, exit 133).
+    let mut button: Option<AxRef> = None;
+    fn search(el: AXUIElementRef, found: &mut Option<AxRef>) {
         if found.is_some() {
             return;
         }
         if role_of(el) == ROLE_BUTTON && attr_string(el, ATTR_TITLE).as_deref() == Some("Send") {
-            *found = Some(el);
+            *found = Some(AxRef::retained(el));
             return;
         }
         for child in child_elements(el, ATTR_CHILDREN) {
@@ -1973,7 +1994,7 @@ fn click_send_button(window: AXUIElementRef, pid: i32) -> bool {
     let Some(button) = button else {
         return false;
     };
-    let Some(rect) = frame_of(button) else {
+    let Some(rect) = frame_of(button.as_raw()) else {
         return false;
     };
     let center = CGPoint::new(
@@ -2133,7 +2154,8 @@ pub fn open_window_titles() -> Result<Vec<String>, SendError> {
 #[cfg(test)]
 mod room_matching_tests {
     use super::{
-        room_matches, room_member_key, search_query_for, FocusPolicy, SendContext, SendError,
+        require_written_compose, room_matches, room_member_key, search_query_for, FocusPolicy,
+        SendContext, SendError,
     };
 
     #[test]
@@ -2229,6 +2251,21 @@ mod room_matching_tests {
         assert!(matches!(
             context.require_intended_background_compose("Synthetic Room", "intended", None),
             Err(SendError::BackgroundComposeChanged(room)) if room == "Synthetic Room"
+        ));
+    }
+
+    #[test]
+    fn a_write_the_compose_box_did_not_take_stops_the_send() {
+        assert!(require_written_compose("Synthetic Room", "intended", Some("intended")).is_ok());
+        // Delivered on the write itself.
+        assert!(require_written_compose("Synthetic Room", "intended", Some("")).is_ok());
+        assert!(matches!(
+            require_written_compose("Synthetic Room", "intended", Some("leftover draft")),
+            Err(SendError::ComposeKeptOtherText(room)) if room == "Synthetic Room"
+        ));
+        assert!(matches!(
+            require_written_compose("Synthetic Room", "intended", None),
+            Err(SendError::ComposeKeptOtherText(room)) if room == "Synthetic Room"
         ));
     }
 
