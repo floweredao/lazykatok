@@ -119,6 +119,11 @@ unsafe extern "C" {
         value: CFTypeRef,
     ) -> AXError;
     fn AXUIElementPerformAction(element: AXUIElementRef, action: CFStringRef) -> AXError;
+    fn AXUIElementIsAttributeSettable(
+        element: AXUIElementRef,
+        attribute: CFStringRef,
+        settable: *mut u8,
+    ) -> AXError;
     fn AXIsProcessTrusted() -> bool;
     fn AXValueGetValue(value: CFTypeRef, the_type: u32, out: *mut c_void) -> bool;
 
@@ -1227,17 +1232,41 @@ pub fn send_image_to_open_window(
     Err(SendError::ImageNotSent)
 }
 
-/// The compose box is the text area inside one of the window's scroll areas; the other scroll
-/// area holds the transcript table.
+/// The compose box is the editable text area inside one of the window's scroll areas; another
+/// scroll area holds the transcript table.
+///
+/// Group rooms can show a read-only text area (a pinned notice) in a scroll area ahead of the
+/// compose box. Writing AXValue to it reports success but changes nothing, so taking the first
+/// text area made every send read back that text and stop as if a draft were in the way.
 fn compose_box(window: AXUIElementRef) -> Option<AxRef> {
-    child_elements(window, ATTR_CHILDREN)
+    let candidates = child_elements(window, ATTR_CHILDREN)
         .into_iter()
         .filter(|c| role_of(c.as_raw()) == ROLE_SCROLL_AREA)
-        .find_map(|sa| {
+        .flat_map(|sa| {
             child_elements(sa.as_raw(), ATTR_CHILDREN)
                 .into_iter()
-                .find(|c| role_of(c.as_raw()) == ROLE_TEXT_AREA)
+                .filter(|c| role_of(c.as_raw()) == ROLE_TEXT_AREA)
         })
+        .map(|c| {
+            let editable = value_settable(c.as_raw());
+            (c, editable)
+        });
+    first_editable(candidates)
+}
+
+fn value_settable(el: AXUIElementRef) -> bool {
+    let key = CFString::new(ATTR_VALUE);
+    let mut settable: u8 = 0;
+    let err =
+        unsafe { AXUIElementIsAttributeSettable(el, key.as_concrete_TypeRef(), &mut settable) };
+    err == AX_SUCCESS && settable != 0
+}
+
+/// The first candidate whose value can be written, in window order.
+fn first_editable<T>(candidates: impl IntoIterator<Item = (T, bool)>) -> Option<T> {
+    candidates
+        .into_iter()
+        .find_map(|(el, editable)| editable.then_some(el))
 }
 
 /// Number of message rows currently in the window's transcript. Used as proof that a message
@@ -2154,9 +2183,21 @@ pub fn open_window_titles() -> Result<Vec<String>, SendError> {
 #[cfg(test)]
 mod room_matching_tests {
     use super::{
-        require_written_compose, room_matches, room_member_key, search_query_for, FocusPolicy,
-        SendContext, SendError,
+        first_editable, require_written_compose, room_matches, room_member_key, search_query_for,
+        FocusPolicy, SendContext, SendError,
     };
+
+    #[test]
+    fn a_read_only_text_area_ahead_of_the_compose_box_is_skipped() {
+        // A group room's pinned notice comes first in window order and cannot be written.
+        assert_eq!(
+            first_editable([("notice", false), ("compose", true)]),
+            Some("compose")
+        );
+        assert_eq!(first_editable([("compose", true)]), Some("compose"));
+        assert_eq!(first_editable([("notice", false)]), None);
+        assert_eq!(first_editable::<&str>([]), None);
+    }
 
     #[test]
     fn member_order_does_not_decide_identity() {
