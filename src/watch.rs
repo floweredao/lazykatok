@@ -509,9 +509,14 @@ fn wrap_chat(chat: &ChatEntry, grouped: bool, width: usize) -> Vec<ReplyRow> {
     wrap_prefixed(&prefix, &chat.text, width)
 }
 
+/// A body column narrower than one wide grapheme cannot hold CJK text at all: every cluster
+/// is dropped as unfittable and the message disappears behind its own sender column. Such a
+/// row wraps the prefix and the body together across the full width instead.
+const MIN_BODY_WIDTH: usize = 2;
+
 fn wrap_prefixed(prefix: &str, body: &str, width: usize) -> Vec<ReplyRow> {
     let prefix_width = UnicodeWidthStr::width(prefix);
-    if prefix_width >= width {
+    if width.saturating_sub(prefix_width) < MIN_BODY_WIDTH {
         return wrap_display_line(&format!("{prefix}{body}"), width)
             .into_iter()
             .map(|text| ReplyRow {
@@ -1123,6 +1128,28 @@ mod tests {
         let mut tiny = ReplyUiState::default();
         tiny.push_chat(chat_at(2, 0, "민준", "body"));
         assert!(texts(&tiny.frame(23, 8))[0][6..].starts_with("민준: body"));
+    }
+
+    #[test]
+    fn a_long_sender_in_a_narrow_terminal_keeps_the_message_text() {
+        let rows = wrap_chat(&chat_at(2, 0, "가나다라마바사", "회의 세 시"), false, 23);
+        let rendered = rows
+            .iter()
+            .map(|row| row.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            rows.iter().any(|row| row.text.contains("회의 세 시")),
+            "a sender wide enough to leave one cell must not swallow the message: {rendered:?}"
+        );
+        for row in &rows {
+            assert!(
+                UnicodeWidthStr::width(row.text.as_str()) <= 23,
+                "row wider than the terminal: {:?}",
+                row.text
+            );
+        }
     }
 
     #[test]
