@@ -119,6 +119,9 @@ pub(crate) enum Commands {
         #[arg(long)]
         since: Option<String>,
         /// Directory to write the transcript into.
+        ///
+        /// Created owner-only when it does not exist; one that already exists keeps its own
+        /// permissions. The transcript file is owner-only either way.
         #[arg(long)]
         out: Option<PathBuf>,
         #[arg(long)]
@@ -367,6 +370,9 @@ pub(crate) enum MediaCommand {
         #[arg(long)]
         log: Option<i64>,
         /// Output directory for decrypted/fetched media files.
+        ///
+        /// Created owner-only when it does not exist; one that already exists keeps its own
+        /// permissions. Each media file is owner-only either way.
         #[arg(long)]
         out: Option<PathBuf>,
         /// Disable CDN downloads and use only local cache/thumbnail/stub tiers.
