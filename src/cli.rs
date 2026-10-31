@@ -53,7 +53,9 @@ pub(crate) enum Commands {
         /// Actually delete what `--prune-preview` reports.
         ///
         /// This is the only command that removes archived messages. Preview
-        /// first; a deletion cannot be undone from within lazykatok.
+        /// first; a deletion cannot be undone from within lazykatok. When anything
+        /// is removed, the archive file is rewritten and the semantic index is
+        /// deleted so no copy of the text remains; run `index` again afterwards.
         #[arg(long, conflicts_with = "prune_preview")]
         prune_deleted: bool,
         /// Include per-chat earliest-change keys (`touched_chats`) in the report.

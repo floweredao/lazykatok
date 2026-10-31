@@ -627,6 +627,7 @@ pub(crate) fn run(
                 &config,
                 &archive_path,
                 &data_dir,
+                &semantic_dir,
             )
         }
         Commands::Index {
@@ -2864,12 +2865,20 @@ fn run_sync(
     config: &KatokConfig,
     archive_path: &Path,
     data_dir: &Path,
+    semantic_dir: &Path,
 ) -> Result<()> {
     let adapter = adapter_for_source(source, path, data_dir)?;
     let read_started = Instant::now();
     let messages = adapter.messages().context("read source messages")?;
     let read_source = read_started.elapsed().as_millis();
     let archive = Archive::open(archive_path).context("open archive")?;
+    if prune_deleted {
+        // A pruned message must not survive in freed pages or old FTS segments.
+        archive
+            .connection()
+            .execute_batch("PRAGMA secure_delete = ON;")
+            .context("enable secure delete")?;
+    }
     // Message upserts and the chunk rebuild are one unit: chunks derived from half-written
     // messages are not a usable archive state, so either both land or neither does.
     let report = archive.in_transaction(|| {
@@ -2960,6 +2969,21 @@ fn run_sync(
         Ok::<_, anyhow::Error>((report, pruned))
     })?;
     let (mut report, pruned) = report;
+    let mut semantic_index_removed = false;
+    if prune_deleted && !pruned.is_empty() {
+        // Merge the FTS segments so the deleted text is dropped from them, then rewrite the
+        // file so no freed page keeps a copy.
+        archive
+            .connection()
+            .execute_batch("INSERT INTO chunks_fts(chunks_fts) VALUES('optimize'); VACUUM;")
+            .context("purge pruned text from the archive file")?;
+        // The index embedded the removed text and is already stale, so it is deleted rather
+        // than left on disk until the next index run.
+        if semantic_dir.exists() {
+            std::fs::remove_dir_all(semantic_dir).context("remove semantic index")?;
+            semantic_index_removed = true;
+        }
+    }
     // Gate is output-only: the archive always computed touched_chats for the rebuild above.
     report.include_touched = include_touched;
     freshness::record_sync(data_dir, source, report.total_messages, report.chunks)?;
@@ -2974,6 +2998,10 @@ fn run_sync(
                     "prunable_messages".to_string()
                 },
                 serde_json::to_value(&pruned).context("serialize pruned")?,
+            );
+            map.insert(
+                "semantic_index_removed".to_string(),
+                serde_json::Value::Bool(semantic_index_removed),
             );
         }
         return print_payload(json, &payload);
