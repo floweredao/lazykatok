@@ -9,7 +9,7 @@
 5. `lazykatok index --json`으로 EmbeddingGemma 벡터 인덱스를 만듭니다.
 6. semantic smoke search를 실행합니다.
 
-helper는 `lazykatok`이 PATH에 없으면 클론 루트의 `target/debug/lazykatok`을 대신 사용합니다.
+helper는 `lazykatok`이 PATH에 없으면 스크립트가 있는 클론의 `target/release/lazykatok`, 없으면 `target/debug/lazykatok`을 대신 사용합니다. 어느 디렉터리에서 실행해도 같습니다.
 
 helper 실행:
 
