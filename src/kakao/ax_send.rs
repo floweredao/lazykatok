@@ -92,6 +92,8 @@ const ATTR_DESCRIPTION: &str = "AXDescription";
 const ATTR_FRONTMOST: &str = "AXFrontmost";
 const ATTR_ROWS: &str = "AXRows";
 const ATTR_FOCUSED: &str = "AXFocused";
+const ATTR_FOCUSED_WINDOW: &str = "AXFocusedWindow";
+const ATTR_FOCUSED_ELEMENT: &str = "AXFocusedUIElement";
 const ATTR_POSITION: &str = "AXPosition";
 const ATTR_SIZE: &str = "AXSize";
 
@@ -161,6 +163,11 @@ unsafe extern "C" {
     /// `kCGAnyInputEventType` (`0xFFFF_FFFF`) is not a member of the crate's
     /// `CGEventType` enum.
     fn CGEventSourceSecondsSinceLastEventType(state_id: u32, event_type: u32) -> f64;
+}
+
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFEqual(cf1: CFTypeRef, cf2: CFTypeRef) -> u8;
 }
 
 /// `kCGAnyInputEventType`: any keyboard, mouse, or tablet event.
@@ -237,6 +244,111 @@ fn child_elements(el: AXUIElementRef, attribute: &str) -> Vec<AxRef> {
 
 fn role_of(el: AXUIElementRef) -> String {
     attr_string(el, ATTR_ROLE).unwrap_or_default()
+}
+
+/// Whether two AX references name the same UI element.
+fn same_element(a: AXUIElementRef, b: AXUIElementRef) -> bool {
+    !a.is_null() && !b.is_null() && unsafe { CFEqual(a as CFTypeRef, b as CFTypeRef) } != 0
+}
+
+/// Where a keystroke posted to KakaoTalk right now would land, compared with where it is meant
+/// to go.
+///
+/// KakaoTalk routes every keystroke it receives to its focused window and that window's focused
+/// element. That holds for an Enter posted to the pid and for anything typed or pasted through
+/// the global tap. With several chat windows open, the focused window is often another room,
+/// so "KakaoTalk is frontmost" is not enough: text or an Enter meant for one room reaches
+/// whichever room has focus. `None` means the attribute could not be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct KeyTarget {
+    window: Option<bool>,
+    element: Option<bool>,
+}
+
+fn key_target(app: &AxRef, window: AXUIElementRef, element: AXUIElementRef) -> KeyTarget {
+    let read = |attribute: &str, expected: AXUIElementRef| {
+        copy_attr(app.as_raw(), attribute).map(|raw| {
+            let focused = AxRef(raw as AXUIElementRef);
+            same_element(focused.as_raw(), expected)
+        })
+    };
+    KeyTarget {
+        window: read(ATTR_FOCUSED_WINDOW, window),
+        element: read(ATTR_FOCUSED_ELEMENT, element),
+    }
+}
+
+/// Why a keystroke was not posted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeystrokeRefusal {
+    WindowNotFocused,
+    FieldNotFocused,
+    TextChanged,
+}
+
+impl std::fmt::Display for KeystrokeRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::WindowNotFocused => "another KakaoTalk window has focus",
+            Self::FieldNotFocused => "its input field is not the focused element",
+            Self::TextChanged => "the input box no longer holds exactly this message",
+        })
+    }
+}
+
+/// Allow a keystroke only when it would land in `target` and, when `intended` is given, the
+/// field holds exactly that text. An unreadable focus or value is refused, never assumed.
+fn require_key_target(
+    what: &str,
+    target: KeyTarget,
+    value: Option<&str>,
+    intended: Option<&str>,
+) -> Result<(), SendError> {
+    let refuse = |reason| {
+        Err(SendError::KeystrokeTargetLost {
+            what: what.to_string(),
+            reason,
+        })
+    };
+    if target.window != Some(true) {
+        return refuse(KeystrokeRefusal::WindowNotFocused);
+    }
+    if target.element != Some(true) {
+        return refuse(KeystrokeRefusal::FieldNotFocused);
+    }
+    if let Some(intended) = intended {
+        if value != Some(intended) {
+            return refuse(KeystrokeRefusal::TextChanged);
+        }
+    }
+    Ok(())
+}
+
+/// Only the compose text check of [`require_key_target`], for actions aimed at one window's own
+/// element (`AXPress` on its Send button), which focus elsewhere cannot redirect.
+fn require_compose_text(room: &str, value: Option<&str>, intended: &str) -> Result<(), SendError> {
+    if value == Some(intended) {
+        Ok(())
+    } else {
+        Err(SendError::KeystrokeTargetLost {
+            what: format!("'{room}'"),
+            reason: KeystrokeRefusal::TextChanged,
+        })
+    }
+}
+
+/// Raise `window` and make `element` its focused element, so keystrokes go there.
+fn focus_window_element(window: AXUIElementRef, element: AXUIElementRef) {
+    let raise = CFString::new(ACTION_RAISE);
+    unsafe { AXUIElementPerformAction(window, raise.as_concrete_TypeRef()) };
+    let yes = core_foundation::boolean::CFBoolean::true_value();
+    unsafe {
+        AXUIElementSetAttributeValue(
+            element,
+            CFString::new(ATTR_FOCUSED).as_concrete_TypeRef(),
+            yes.as_CFTypeRef(),
+        )
+    };
 }
 
 /// Options controlling how much the send is allowed to disturb the user.
@@ -549,16 +661,6 @@ fn front_then<T>(pid: i32, action: impl FnOnce() -> T) -> Result<T, SendError> {
     Err(SendError::FocusLost)
 }
 
-/// Post a global key only while `pid` is confirmed frontmost.
-///
-/// The confirmation is re-read immediately before the post, so the window in
-/// which the user could steal focus and receive the keystroke shrinks to the
-/// syscall in between. Without this, a Cmd+V meant for KakaoTalk lands in
-/// whatever the user clicked on.
-fn press_key_global_at(pid: i32, key: u16, flags: CGEventFlags) -> Result<(), SendError> {
-    front_then(pid, || press_key_global(key, flags))?
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum SendError {
     #[error(
@@ -589,6 +691,11 @@ pub enum SendError {
     BackgroundComposeChanged(String),
     #[error("could not create the Enter key event")]
     KeyEventFailed,
+    #[error("stopped before a keystroke for {what}: {reason}; nothing was pressed")]
+    KeystrokeTargetLost {
+        what: String,
+        reason: KeystrokeRefusal,
+    },
     #[error("message stayed in the input box; KakaoTalk did not accept Enter")]
     NotSent,
     #[error(
@@ -1033,12 +1140,17 @@ fn describe_value(text: &str) -> String {
 ///
 /// `CGEventKeyboardSetUnicodeString` carries the characters on the event itself,
 /// so this needs no keyboard-layout mapping and works for Hangul as written.
-fn type_text(text: &str) -> Result<(), SendError> {
+///
+/// The keystrokes go to whatever has focus when each one arrives, so `still_on_target` is
+/// checked before every character and typing stops the moment focus has moved. Without it, a
+/// focus change part-way through typed the rest of the text into another room.
+fn type_text(
+    text: &str,
+    still_on_target: impl FnMut() -> Result<(), SendError>,
+) -> Result<(), SendError> {
     let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
         .map_err(|_| SendError::KeyEventFailed)?;
-    for chunk in text.chars() {
-        let mut buf = [0u16; 2];
-        let encoded = chunk.encode_utf16(&mut buf);
+    type_checked(text, still_on_target, |encoded| {
         for key_down in [true, false] {
             let event = CGEvent::new_keyboard_event(source.clone(), 0, key_down)
                 .map_err(|_| SendError::KeyEventFailed)?;
@@ -1047,6 +1159,20 @@ fn type_text(text: &str) -> Result<(), SendError> {
             event.post(CGEventTapLocation::HID);
         }
         std::thread::sleep(Duration::from_millis(8));
+        Ok(())
+    })
+}
+
+/// Post `text` one character at a time, checking the target before each one.
+fn type_checked(
+    text: &str,
+    mut still_on_target: impl FnMut() -> Result<(), SendError>,
+    mut post: impl FnMut(&[u16]) -> Result<(), SendError>,
+) -> Result<(), SendError> {
+    for chunk in text.chars() {
+        still_on_target()?;
+        let mut buf = [0u16; 2];
+        post(chunk.encode_utf16(&mut buf))?;
     }
     Ok(())
 }
@@ -1145,24 +1271,27 @@ pub fn send_image_to_open_window(
         &format!("{} · {}", target.name, attachment_label(image_path)),
     )?;
 
-    if let Some(compose) = compose_box(window.as_raw()) {
-        let focus_key = CFString::new(ATTR_FOCUSED);
-        let yes = core_foundation::boolean::CFBoolean::true_value();
-        unsafe {
-            AXUIElementSetAttributeValue(
-                compose.as_raw(),
-                focus_key.as_concrete_TypeRef(),
-                yes.as_CFTypeRef(),
-            )
-        };
-    }
+    let compose = compose_box(window.as_raw())
+        .ok_or_else(|| SendError::ComposeBoxNotFound(target.name.clone()))?;
+    // Cmd+V pastes into KakaoTalk's focused window, which is not necessarily this one.
+    focus_window_element(window.as_raw(), compose.as_raw());
+    std::thread::sleep(Duration::from_millis(200));
 
     if ctx.cancelled() {
         return Err(SendError::Cancelled);
     }
-    // KakaoTalk is confirmed frontmost, so the global tap is the reliable route for the paste
-    // — and the confirmation is re-read inside this call, immediately before the post.
-    press_key_global_at(pid, KEY_V, CGEventFlags::CGEventFlagCommand)?;
+    // KakaoTalk, this window, and its compose box are re-confirmed inside this call,
+    // immediately before the post.
+    let room_label = format!("'{}'", target.name);
+    front_then(pid, || {
+        require_key_target(
+            &room_label,
+            key_target(&app, window.as_raw(), compose.as_raw()),
+            None,
+            None,
+        )?;
+        press_key_global(KEY_V, CGEventFlags::CGEventFlagCommand)
+    })??;
 
     // Depending on version KakaoTalk either shows a confirmation sheet or sends straight away,
     // so both are handled — but success is only ever claimed once a new transcript row exists.
@@ -1267,6 +1396,18 @@ fn open_titles(windows: &[AxRef]) -> String {
 /// picks the wrong window whenever a chat is open. The reliable difference is the compose box:
 /// every chat window has one, the main window does not.
 fn main_window(windows: &[AxRef]) -> Option<&AxRef> {
+    // The chat list window carries the app's own name as its title. Prefer it: the scoring
+    // below reads row names, and once the list is filtered by a search query it can hold no
+    // named rows at all, at which point a chat window used to win and the search box being
+    // cleared, or typed into, was that room's.
+    if let Some(titled) = windows.iter().find(|w| {
+        matches!(
+            attr_string(w.as_raw(), ATTR_TITLE).as_deref(),
+            Some(MAIN_WINDOW_TITLE | MAIN_WINDOW_TITLE_KO)
+        ) && chat_list_table_in(w.as_raw()).is_some()
+    }) {
+        return Some(titled);
+    }
     // Structural guesses are insufficient: a chat window also has a table (its
     // transcript), a read-only channel window also lacks a compose box, and a chat window also
     // has a text field (search-within-chat). So score candidates by the property actually
@@ -1274,6 +1415,8 @@ fn main_window(windows: &[AxRef]) -> Option<&AxRef> {
     // scores near zero because message rows carry timestamps and bodies, not room names.
     windows
         .iter()
+        // A window with a compose box is a chat, never the list.
+        .filter(|w| compose_box(w.as_raw()).is_none())
         .filter_map(|w| chat_list_table_in(w.as_raw()).map(|t| (w, t)))
         .max_by_key(|(_, table)| {
             child_elements(table.as_raw(), ATTR_ROWS)
@@ -1290,6 +1433,9 @@ fn main_window(windows: &[AxRef]) -> Option<&AxRef> {
         })
         .map(|(w, _)| w)
 }
+
+const MAIN_WINDOW_TITLE: &str = "KakaoTalk";
+const MAIN_WINDOW_TITLE_KO: &str = "카카오톡";
 
 /// Rows sampled per candidate window when identifying the chat list. Kept small because every
 /// row costs several AX round trips.
@@ -1562,7 +1708,19 @@ fn open_room_via_search(
             empty.as_CFTypeRef(),
         )
     };
-    front_then(pid, || type_text(&query))??;
+    // Typing goes to KakaoTalk's focused window, which is often a chat room rather than the
+    // list. Raise the list and focus the field, then type only while both still hold.
+    focus_window_element(main.as_raw(), field.as_raw());
+    front_then(pid, || {
+        type_text(&query, || {
+            require_key_target(
+                "the chat search box",
+                key_target(app, main.as_raw(), field.as_raw()),
+                None,
+                None,
+            )
+        })
+    })??;
     // Prove the field ended up holding the query; if the keystrokes went
     // somewhere else this says so instead of silently filtering nothing.
     let mut landed = false;
@@ -1765,6 +1923,9 @@ fn resolve_window(
                 // less relevant error be the one reported.
                 None => last = Some(SendError::RoomOpenFailed(target.name.clone())),
             },
+            // An empty list right after the search box is cleared is a re-render, not news;
+            // keep the more specific reason an earlier attempt gave.
+            Err(SendError::ChatListUnavailable) if last.is_some() => {}
             Err(e) => last = Some(e),
         }
         if attempt % 3 == 0 {
@@ -1891,15 +2052,32 @@ pub fn send_to_open_window(
         false
     };
 
-    press_key(pid, KEY_RETURN, CGEventFlags::CGEventFlagNull)?;
-    if accepted(20) {
-        return Ok(());
+    // An Enter posted to the pid goes to KakaoTalk's focused window, not to this one. Post it
+    // only while this window and its compose box hold focus and the box holds exactly this
+    // message; otherwise the Enter would send whatever another room's box contains. When the
+    // check fails, skip straight to the Send button, which belongs to this window.
+    let compose_value = || attr_string(compose.as_raw(), ATTR_VALUE);
+    let room_label = format!("'{}'", target.name);
+    let on_target = || {
+        require_key_target(
+            &room_label,
+            key_target(&app, window.as_raw(), compose.as_raw()),
+            compose_value().as_deref(),
+            Some(text),
+        )
+    };
+    if on_target().is_ok() {
+        press_key(pid, KEY_RETURN, CGEventFlags::CGEventFlagNull)?;
+        if accepted(20) {
+            return Ok(());
+        }
     }
 
     // Newer KakaoTalk compose areas deliver neither on the AXValue write nor on a synthesized
     // Enter (the input is web-backed and ignores posted key events). The Send button still
     // answers AXPress, which needs no focus and no activation, so it is tried next — this is
     // still a non-activating route and stays available to background-only sends.
+    require_compose_text(&target.name, compose_value().as_deref(), text)?;
     if press_send_button(window.as_raw()) && accepted(20) {
         return Ok(());
     }
@@ -1916,18 +2094,14 @@ pub fn send_to_open_window(
     // their input, and only if KakaoTalk verifiably comes forward. A global Enter fired while
     // the user is back in their own app would submit whatever they were in the middle of.
     let _hold = take_screen(pid, ctx, &format!("{} 로 전송 중", target.name))?;
-    let raise = CFString::new(ACTION_RAISE);
-    unsafe { AXUIElementPerformAction(window.as_raw(), raise.as_concrete_TypeRef()) };
+    focus_window_element(window.as_raw(), compose.as_raw());
     std::thread::sleep(Duration::from_millis(200));
-    let yes = core_foundation::boolean::CFBoolean::true_value();
-    unsafe {
-        AXUIElementSetAttributeValue(
-            compose.as_raw(),
-            CFString::new(ATTR_FOCUSED).as_concrete_TypeRef(),
-            yes.as_CFTypeRef(),
-        )
-    };
-    press_key_global_at(pid, KEY_RETURN, CGEventFlags::CGEventFlagNull)?;
+    // Checked inside front_then, immediately before the post: a focus change after the raise
+    // must stop the Enter rather than submit another window's text.
+    front_then(pid, || {
+        on_target()?;
+        press_key_global(KEY_RETURN, CGEventFlags::CGEventFlagNull)
+    })??;
     if accepted(30) {
         return Ok(());
     }
@@ -1937,7 +2111,7 @@ pub fn send_to_open_window(
     // The room window is frontmost here (raised above), so the click at its button center
     // cannot land in any other window — the same coordinate-safety argument the chat-list
     // double-click relies on.
-    if click_send_button(window.as_raw(), pid) && accepted(30) {
+    if click_send_button(window.as_raw(), pid, &on_target)? && accepted(30) {
         return Ok(());
     }
     Err(SendError::NotSent)
@@ -1968,7 +2142,11 @@ fn press_send_button(window: AXUIElementRef) -> bool {
 /// HID tap at screen coordinates, exactly like the chat-list double-click in
 /// `open_row_by_click`. Returns `false` when the button or its geometry cannot be read, or the
 /// frontmost check fails, so the caller's error path stays reachable.
-fn click_send_button(window: AXUIElementRef, pid: i32) -> bool {
+fn click_send_button(
+    window: AXUIElementRef,
+    pid: i32,
+    on_target: &dyn Fn() -> Result<(), SendError>,
+) -> Result<bool, SendError> {
     // The button's geometry is read inside the search, while the child reference that owns it
     // is still alive. Keeping the raw element past the loop would read a released AX object
     // (CFGetTypeID on freed memory traps with SIGTRAP).
@@ -1990,29 +2168,33 @@ fn click_send_button(window: AXUIElementRef, pid: i32) -> bool {
     }
     search(window, &mut button);
     let Some(Some(rect)) = button else {
-        return false;
+        return Ok(false);
     };
     let center = CGPoint::new(
         rect.origin.x + rect.size.width / 2.0,
         rect.origin.y + rect.size.height / 2.0,
     );
     let Ok(source) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) else {
-        return false;
+        return Ok(false);
     };
-    front_then(pid, || {
+    let clicked = front_then(pid, || {
+        on_target()?;
         for kind in [CGEventType::LeftMouseDown, CGEventType::LeftMouseUp] {
             let Ok(event) =
                 CGEvent::new_mouse_event(source.clone(), kind, center, CGMouseButton::Left)
             else {
-                return false;
+                return Ok(false);
             };
             event.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, 1);
             tag_synthetic(&event);
             event.post(CGEventTapLocation::HID);
         }
-        true
-    })
-    .unwrap_or(false)
+        Ok(true)
+    });
+    match clicked {
+        Ok(result) => result,
+        Err(_) => Ok(false),
+    }
 }
 
 /// Put UTF-8 `text` on the clipboard.
@@ -2075,16 +2257,20 @@ pub fn draft_to_open_window(
     put_text_on_clipboard(text)?;
 
     let _hold = take_screen(pid, ctx, &format!("{} 초안 작성 중", target.name))?;
-    let focus_key = CFString::new(ATTR_FOCUSED);
-    let yes = core_foundation::boolean::CFBoolean::true_value();
-    unsafe {
-        AXUIElementSetAttributeValue(
-            compose.as_raw(),
-            focus_key.as_concrete_TypeRef(),
-            yes.as_CFTypeRef(),
-        )
-    };
-    press_key_global_at(pid, KEY_V, CGEventFlags::CGEventFlagCommand)?;
+    // Cmd+V pastes into KakaoTalk's focused window, so raise this one and check it holds focus
+    // immediately before the paste.
+    focus_window_element(window.as_raw(), compose.as_raw());
+    std::thread::sleep(Duration::from_millis(200));
+    let room_label = format!("'{}'", target.name);
+    front_then(pid, || {
+        require_key_target(
+            &room_label,
+            key_target(&app, window.as_raw(), compose.as_raw()),
+            None,
+            None,
+        )?;
+        press_key_global(KEY_V, CGEventFlags::CGEventFlagCommand)
+    })??;
 
     // The box must end up holding the draft. Empty means either the paste never
     // landed or — the case that matters — it was sent, and reporting a waiting
@@ -2144,6 +2330,145 @@ pub fn open_window_titles() -> Result<Vec<String>, SendError> {
         .filter_map(|w| attr_string(w.as_raw(), ATTR_TITLE))
         .filter(|t| !t.is_empty())
         .collect())
+}
+
+#[cfg(test)]
+mod keystroke_target_tests {
+    use super::{
+        require_compose_text, require_key_target, type_checked, KeyTarget, KeystrokeRefusal,
+        SendError,
+    };
+
+    fn on(window: Option<bool>, element: Option<bool>) -> KeyTarget {
+        KeyTarget { window, element }
+    }
+
+    fn refusal(result: Result<(), SendError>) -> Option<KeystrokeRefusal> {
+        match result {
+            Ok(()) => None,
+            Err(SendError::KeystrokeTargetLost { reason, .. }) => Some(reason),
+            Err(other) => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn a_keystroke_needs_the_target_window_to_hold_focus() {
+        let check = |window| {
+            refusal(require_key_target(
+                "'Synthetic Room'",
+                on(window, Some(true)),
+                Some("hello"),
+                Some("hello"),
+            ))
+        };
+        assert_eq!(check(Some(true)), None);
+        assert_eq!(check(Some(false)), Some(KeystrokeRefusal::WindowNotFocused));
+        // Unreadable focus is not taken as a yes.
+        assert_eq!(check(None), Some(KeystrokeRefusal::WindowNotFocused));
+    }
+
+    #[test]
+    fn a_keystroke_needs_the_field_to_be_the_focused_element() {
+        for element in [Some(false), None] {
+            assert_eq!(
+                refusal(require_key_target(
+                    "'Synthetic Room'",
+                    on(Some(true), element),
+                    Some("hello"),
+                    Some("hello"),
+                )),
+                Some(KeystrokeRefusal::FieldNotFocused)
+            );
+        }
+    }
+
+    #[test]
+    fn enter_needs_the_box_to_hold_exactly_the_message() {
+        let check = |value| {
+            refusal(require_key_target(
+                "'Synthetic Room'",
+                on(Some(true), Some(true)),
+                value,
+                Some("hello"),
+            ))
+        };
+        assert_eq!(check(Some("hello")), None);
+        assert_eq!(check(Some("hello.")), Some(KeystrokeRefusal::TextChanged));
+        assert_eq!(check(Some("")), Some(KeystrokeRefusal::TextChanged));
+        assert_eq!(check(None), Some(KeystrokeRefusal::TextChanged));
+        // A paste or search keystroke has no expected text and checks focus only.
+        assert_eq!(
+            refusal(require_key_target(
+                "the chat search box",
+                on(Some(true), Some(true)),
+                Some("anything"),
+                None,
+            )),
+            None
+        );
+        assert_eq!(
+            refusal(require_compose_text(
+                "Synthetic Room",
+                Some("other"),
+                "hello"
+            )),
+            Some(KeystrokeRefusal::TextChanged)
+        );
+        assert_eq!(
+            refusal(require_compose_text(
+                "Synthetic Room",
+                Some("hello"),
+                "hello"
+            )),
+            None
+        );
+    }
+
+    #[test]
+    fn typing_stops_at_the_first_character_after_focus_moves() {
+        let mut checks = 0;
+        let mut posted: Vec<u16> = Vec::new();
+        let result = type_checked(
+            "./status",
+            || {
+                checks += 1;
+                if checks <= 3 {
+                    Ok(())
+                } else {
+                    Err(SendError::KeystrokeTargetLost {
+                        what: "the chat search box".to_string(),
+                        reason: KeystrokeRefusal::WindowNotFocused,
+                    })
+                }
+            },
+            |units| {
+                posted.extend_from_slice(units);
+                Ok(())
+            },
+        );
+        assert_eq!(refusal(result), Some(KeystrokeRefusal::WindowNotFocused));
+        assert_eq!(String::from_utf16(&posted).unwrap(), "./s");
+    }
+
+    #[test]
+    fn typing_checks_before_every_character_including_the_first() {
+        let mut posted = 0;
+        let result = type_checked(
+            "가나",
+            || {
+                Err(SendError::KeystrokeTargetLost {
+                    what: "the chat search box".to_string(),
+                    reason: KeystrokeRefusal::FieldNotFocused,
+                })
+            },
+            |_| {
+                posted += 1;
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(posted, 0);
+    }
 }
 
 #[cfg(test)]
