@@ -4,6 +4,14 @@
 실시간 대화 TUI, 로컬 아카이브, 키워드·BM25·의미 검색을 하나의 CLI로 제공합니다.
 Apple Silicon macOS 전용.
 
+> **English.** lazykatok is a local-first KakaoTalk client for the macOS terminal:
+> a room picker and live chat TUI with replies, a local SQLite archive, and keyword,
+> BM25 and semantic search over it. It reads the KakaoTalk desktop app's own data on
+> your Mac and sends nothing anywhere unless you configure an embedding endpoint.
+> Install with `cargo install --git https://github.com/changeroa/lazykatok`, then run
+> `lazykatok doctor --macos-probe`. The sections below list every command, setting
+> and environment variable; [CONTRIBUTING.md](CONTRIBUTING.md) is in English.
+
 [![CI](https://github.com/changeroa/lazykatok/actions/workflows/ci.yml/badge.svg)](https://github.com/changeroa/lazykatok/actions/workflows/ci.yml)
 
 ## 특징
@@ -32,21 +40,20 @@ Apple Silicon macOS 전용.
 ## 설치
 
 ```bash
-git clone https://github.com/changeroa/lazykatok.git
-cd lazykatok
-cargo build --release
-# 바이너리: target/release/lazykatok
+cargo install --git https://github.com/changeroa/lazykatok
+# 바이너리: ~/.cargo/bin/lazykatok (이 디렉터리가 PATH에 있어야 합니다)
 ```
 
-편하게 쓰려면 PATH에 둔 래퍼 하나면 충분합니다:
+클론해서 고쳐 쓰려면:
 
 ```bash
-cat > ~/.local/bin/lazykatok <<'EOF'
-#!/usr/bin/env bash
-exec "$(git -C ~/src/lazykatok rev-parse --show-toplevel)/target/release/lazykatok" "$@"
-EOF
-# 실제 클론 경로에 맞게 조정한 뒤 chmod +x
+git clone https://github.com/changeroa/lazykatok.git
+cd lazykatok
+cargo install --path .     # 또는 cargo build --release → target/release/lazykatok
 ```
+
+권한 설정을 차례로 안내받으려면 클론 안에서 `scripts/lazykatok-macos-setup.sh`를
+실행하세요 ([docs/macos-first-run.md](docs/macos-first-run.md)).
 
 ## 빠른 시작
 
@@ -71,7 +78,7 @@ lazykatok search semantic "언제 만나기로 했지"  # 의미 검색 (index �
 lazykatok watch --select --reply --accept-use-policy --source macos
 lazykatok search keyword <질의> --json
 lazykatok search hybrid <질의> --json    # BM25 + 의미 검색을 RRF로 결합 (부모 윈도우 단위)
-lazykatok transcript --chat <chat_id> --from 2026-08-01 --to 2026-08-31 --out export.md
+lazykatok transcript --chat <chat_id> --since 2026-08-01T00:00:00+09:00 --out exports/   # 그 시각 이후 메시지를 exports/ 아래 Markdown으로
 ```
 
 ## 계정 고르기
@@ -97,6 +104,35 @@ lazykatok --account <user_id> sync --source macos # 목록에서 고른 계정
   먼저 묻습니다. 그냥 Enter를 누르면 1번(가장 최근 계정)이 선택됩니다.
 - 목록에는 user id, 최근 기록 시각, 열리는 데이터베이스 수만 나옵니다. 이름이나
   파일명은 출력하지 않습니다.
+
+## 설정
+
+설정 파일은 선택입니다. 없으면 아래 기본값을 쓰고, 있으면 `--config <파일>`로
+지정합니다 (자동으로 찾는 기본 경로는 없습니다). 모든 키와 기본값이 담긴 예시는
+[examples/katok.toml](examples/katok.toml)이며, 모르는 키는 오류로 거부됩니다.
+
+| 키 | 기본값 | 의미 |
+| --- | --- | --- |
+| `source_adapter` | `fixture` | `--source`를 생략했을 때 쓸 원본. `macos`로 바꾸면 매번 `--source macos`를 붙이지 않아도 됩니다. |
+| `chunk_gap_group_seconds` | `600` | 단체방에서 이보다 긴 간격이 있으면 새 청크 |
+| `chunk_gap_direct_seconds` | `1800` | 1:1 방에서 이보다 긴 간격이 있으면 새 청크 |
+| `semantic_dir` | `semantic` | 벡터 인덱스 디렉터리 (상대 경로는 데이터 디렉터리 기준) |
+| `embedder_provider` | `local` | 아래 임베딩 백엔드 참고 |
+| `embedder_model` | `embeddinggemma-300m-q4` | 임베딩 모델 |
+| `vector_dimension` | `768` | 벡터 차원 |
+| `embedding_batch_size` | `64` | 한 번에 임베딩할 문단 수 |
+| `snippet_length` | `80` | 검색 결과에 보일 본문 길이 |
+| `embedder_url`, `embedder_api_key_env`, `query_prefix`, `passage_prefix` | 없음 | 아래 임베딩 백엔드 참고 |
+
+그 밖의 전역 옵션과 환경 변수:
+
+| 옵션 / 변수 | 의미 |
+| --- | --- |
+| `--data-dir <dir>` | 아카이브와 인덱스 위치. 기본값 `~/Library/Application Support/katok` |
+| `--account <user_id\|latest>` | 읽을 카톡 계정 (아래 계정 고르기) |
+| `KATOK_KAKAO_USER_ID` | 카톡 DB 복호화에 쓸 user id를 직접 지정 (자동 탐지가 틀릴 때) |
+| `KATOK_FASTEMBED_CACHE_DIR` | 로컬 임베딩 모델 캐시 위치 |
+| `KATOK_EMBED_*`, `KATOK_EMBEDDER` | 아래 임베딩 백엔드 표 |
 
 ## 임베딩 백엔드
 
@@ -174,7 +210,21 @@ URL은 `/embeddings`로 끝나면 그대로, `/v1`로 끝나면 `/embeddings`를
   테스트는 합성 fixture만 사용합니다 (`scripts/verify_release_config.py`의
   프라이버시 오라클이 이를 계속 검사합니다).
 
+## 문제 해결
+
+| 증상 | 확인할 것 |
+| --- | --- |
+| `lazykatok: command not found` | `~/.cargo/bin`이 `PATH`에 있는지 (`export PATH="$HOME/.cargo/bin:$PATH"`) |
+| `doctor --macos-probe`가 DB에 접근하지 못함 | 지금 쓰는 터미널 앱에 전체 디스크 접근 권한을 주고 터미널을 다시 시작 (`lazykatok permissions macos`) |
+| `sync`가 JSONL 경로를 요구함 | `--source macos`를 붙이거나 설정 파일에 `source_adapter = "macos"` |
+| 다른 계정의 대화가 보임 | `lazykatok accounts`로 목록을 보고 `--account latest` 또는 `--account <user_id>` |
+| 전송이 `send failed`로 끝남 | 터미널 앱의 접근성 권한 (`lazykatok permissions macos --accessibility`), 카톡이 실행 중이고 로그인되어 있는지 |
+| `search semantic` 결과가 없음 | 먼저 `lazykatok index`; 기본 로컬 백엔드는 첫 실행 때 모델을 내려받으므로 네트워크가 필요 |
+
 ## 개발
+
+기여 방법과 모든 변경이 통과해야 하는 검사는 [CONTRIBUTING.md](CONTRIBUTING.md)에
+있습니다.
 
 ```bash
 cargo fmt --all -- --check
