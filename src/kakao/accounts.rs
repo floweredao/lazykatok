@@ -208,7 +208,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("kakao")).expect("mkdir");
         std::fs::write(
             katok_cache_path(dir),
-            format!(r#"{{"user_id": {user_id}, "uuid": "00000000-0000-0000-0000-000000000000"}}"#),
+            format!(r#"{{"user_id": {user_id}, "uuid": "12345678-0000-0000-0000-000000000000"}}"#),
         )
         .expect("write cache");
     }
