@@ -1987,11 +1987,17 @@ fn run_doctor(
     let embedder_endpoint = config.embedder_url.clone();
     let embedder_model = config.embedder_model.clone();
     let embedder_dimension = config.vector_dimension;
+    // One `archive` entry, carrying both facts. Two entries under the same key left only the
+    // later one in the payload, so the path never reached the output.
+    let archive_status = if archive_path.exists() {
+        "present"
+    } else {
+        "missing"
+    };
     let payload = serde_json::json!({
         "name": "lazykatok",
         "command": "lazykatok",
         "data_dir": data_dir,
-        "archive": archive_path,
         "semantic_index": semantic_dir,
         "freshness": freshness::load(&data_dir, &archive_path, &semantic_dir, &config)?,
         "local_first": true,
@@ -2003,7 +2009,8 @@ fn run_doctor(
             "macos": macos_probe
         },
         "archive": {
-            "status": if archive_path.exists() { "present" } else { "missing" }
+            "path": archive_path,
+            "status": archive_status
         },
         "embedder": {
             "model": embedder_model,
