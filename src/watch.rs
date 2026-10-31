@@ -411,7 +411,7 @@ impl ReplyUiState {
             input: input.input,
             cursor_column: input.cursor_column,
             footer: display_prefix(
-                "↑↓ scroll  PgUp/PgDn page  Enter send  Ctrl-C quit  /help",
+                "↑↓ scroll  PgUp/PgDn page  Enter send  Esc clear/quit  Ctrl-C quit  /help",
                 width,
             ),
         }
