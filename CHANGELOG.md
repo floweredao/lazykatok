@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Accounts
+
+- `lazykatok accounts` lists every KakaoTalk account whose key opens a database
+  on this Mac, most recently written first, and a new top-level
+  `--account <user-id|latest>` reads that account. A Mac that has used two
+  accounts keeps both accounts' databases, and reading the other one used to
+  need a separate `--data-dir` plus its user id. Each account keeps its own
+  archive: the account already pinned in the data dir keeps it, and any other
+  reads into `<data-dir>/accounts/<user-id>`, so two accounts' messages never
+  share an archive.
+- `watch --select` on the macOS source asks which account to use when more
+  than one opens and none was given.
+
 ### Reply TUI
 
 - Esc now does something in `watch --reply`: it clears a non-empty draft, and
