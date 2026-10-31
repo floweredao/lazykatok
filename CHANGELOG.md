@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Reply TUI
+
+- Esc now does something in `watch --reply`: it clears a non-empty draft, and
+  quits like `/quit` when the draft is already empty. It used to be ignored.
+
 ### Send
 
 - No keystroke is posted unless it would land in the intended place. KakaoTalk

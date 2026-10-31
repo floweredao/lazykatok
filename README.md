@@ -109,6 +109,7 @@ URL은 `/embeddings`로 끝나면 그대로, `/v1`로 끝나면 `/embeddings`를
 | `←` `→` `Home` `End`, `Ctrl-A/B/E/F` | 초안 커서 이동 |
 | `Backspace` / `Delete`, `Ctrl-W/U/K` | 글자·단어·행 삭제 |
 | `↑` `↓` / `PgUp` `PgDn` | 대화 스크롤 / 페이지 |
+| `Esc` | 초안이 있으면 지우고, 비어 있으면 종료 |
 | `Ctrl-C` 또는 `Ctrl-D` | 종료 |
 | `/help`, `/quit` | 도움말, 종료 |
 
