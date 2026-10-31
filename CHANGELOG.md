@@ -59,6 +59,16 @@
 - `doctor --json` now recommends `sync` when the archive file is missing even
   if no semantic index was ever committed. It used to report sync as done and
   point at `index`, which refuses to run without an archive.
+- `doctor --json` no longer calls a semantic index ready when semantic search
+  would refuse it. The freshness check read only the generation cursor, so
+  after the embedder or `vector_dimension` changed,
+  `index_before_semantic_search` stayed `false` while every semantic query
+  failed as stale. It now runs the same cursor and vector-store checks search
+  runs, and still loads no embedding model.
+- The `doctor --json` payload says where the archive is again, as
+  `archive.path` beside `archive.status`. The payload set `archive` twice and
+  the status object replaced the path, so the status command could not answer
+  which archive file the install reads.
 
 ### Semantic search
 
@@ -88,6 +98,11 @@
 
 ### Search
 
+- `search keyword` keeps the newest matches when more match than `--limit`.
+  Matches were ordered oldest first before the cut, so a limit answered every
+  query with the earliest mentions in the archive and ranked them 1..n as if
+  they were the best hits. A literal match carries no relevance score, so
+  recency decides.
 - `search hybrid` gives every window a BM25 chunk spans that chunk's rank. A
   chunk cut across a window boundary used to rank its second window one place
   lower and push every later BM25 window down by one, so semantic hits beat
@@ -140,6 +155,15 @@
   order, by account, chat, and message id. The order used to change from one
   run to the next, so two previews of the same state, or a preview and the
   deletion that followed it, did not read the same.
+- `sync --prune-deleted` leaves no copy of a pruned message's text under the
+  data directory. The rows went away, but the text stayed readable in the
+  archive file's freed pages, in the full-text index's old segments, and in the
+  chat text the semantic index keeps beside its vectors — so a message deleted
+  in KakaoTalk was still recoverable from the files afterwards. A prune that
+  removes anything now deletes securely, rewrites the full-text index, and
+  drops the semantic index, which the prune invalidates in any case;
+  `semantic_index_removed` in the report says when that happened, so a caller
+  knows to run `index` again.
 
 ### Watch
 
@@ -158,6 +182,35 @@
   it now stays in the input box instead of being cleared.
 - Pasting into the reply input turns tabs into spaces, as it already did for
   newlines. Tabs used to be dropped, which joined the words on either side.
+- `watch --reply` keeps the message text when a long sender name leaves no body
+  column. Below a terminal width of about 24 columns the untruncated nickname
+  took the line, and because a grapheme wider than its column is dropped — and
+  every CJK character is two columns wide — the body came out blank. The prefix
+  and the body now wrap together across the full width.
+
+### Output files
+
+- `transcript --out` and `media get --out` leave the permissions of a directory
+  that already exists as they are, and create a missing one owner-only. Both
+  used to set the directory to 0700 whether or not they created it, so writing
+  an export into a shared directory silently re-permissioned it for everyone
+  else. Each exported file is owner-only either way, which is what keeps the
+  content private.
+
+### Errors
+
+- The `cause` field of a `--json` error names each underlying error once. Some
+  errors interpolated their source into their own message while also exposing
+  it as that source, and the chain was rendered with every source appended, so
+  the machine-readable field repeated the same sentence twice.
+
+### Setup
+
+- The macOS setup helper finds the clone's build from any directory, and
+  prefers a release build over a debug one. It looked for `target/debug`
+  relative to the caller's working directory, so running it by path from
+  anywhere but the clone root reported the binary as missing although it was
+  built.
 
 ### Chunking
 
