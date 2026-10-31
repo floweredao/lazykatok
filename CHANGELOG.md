@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Reply TUI
+
+- Esc now does something in `watch --reply`: it clears a non-empty draft, and
+  quits like `/quit` when the draft is already empty. It used to be ignored.
+
 ### Media
 
 - `media get` extracts emoticons and stickers (message types 12, 20, 25) as
