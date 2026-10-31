@@ -129,6 +129,26 @@ fn fixture(name: &str) -> std::path::PathBuf {
 }
 
 #[test]
+fn cli_accepts_the_shipped_example_config() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let example = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/katok.toml");
+
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
+        .args([
+            "--config",
+            example.to_str().expect("utf8 config"),
+            "--data-dir",
+            dir.path().join("data").to_str().expect("utf8 data"),
+            "sync",
+            fixture("group_gap.jsonl").to_str().expect("utf8 fixture"),
+            "--json",
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
 fn cli_refuses_a_semantic_dir_that_would_hold_the_archive() {
     let dir = tempfile::tempdir().expect("create tempdir");
     let data_dir = dir.path().join("data");
