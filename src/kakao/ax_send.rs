@@ -324,16 +324,24 @@ fn require_key_target(
     Ok(())
 }
 
-/// Only the compose text check of [`require_key_target`], for actions aimed at one window's own
-/// element (`AXPress` on its Send button), which focus elsewhere cannot redirect.
-fn require_compose_text(room: &str, value: Option<&str>, intended: &str) -> Result<(), SendError> {
-    if value == Some(intended) {
-        Ok(())
-    } else {
-        Err(SendError::KeystrokeTargetLost {
+/// Whether a send that has already pressed a key should press another one, judged only by what
+/// the compose box holds. Used for actions aimed at one window's own element (`AXPress` on its
+/// Send button), which focus elsewhere cannot redirect.
+///
+/// * `Ok(true)` — the box still holds this message, so carry on.
+/// * `Ok(false)` — the box is empty: KakaoTalk took the message a moment after the acceptance
+///   poll gave up waiting. That is a delivery, and calling it a failure invites the caller to
+///   send the same message a second time.
+/// * `Err` — the box holds something else, or cannot be read. Stop without pressing anything;
+///   the alternative is delivering text this send never wrote.
+fn keep_sending(room: &str, value: Option<&str>, intended: &str) -> Result<bool, SendError> {
+    match value {
+        Some("") => Ok(false),
+        Some(current) if current == intended => Ok(true),
+        _ => Err(SendError::KeystrokeTargetLost {
             what: format!("'{room}'"),
             reason: KeystrokeRefusal::TextChanged,
-        })
+        }),
     }
 }
 
@@ -2057,6 +2065,9 @@ pub fn send_to_open_window(
     // message; otherwise the Enter would send whatever another room's box contains. When the
     // check fails, skip straight to the Send button, which belongs to this window.
     let compose_value = || attr_string(compose.as_raw(), ATTR_VALUE);
+    // KakaoTalk empties the box when it accepts the message, so an empty box on any later check
+    // is this send's own delivery arriving late rather than a reason to press another key.
+    let drained = || compose_value().as_deref() == Some("");
     let room_label = format!("'{}'", target.name);
     let on_target = || {
         require_key_target(
@@ -2077,7 +2088,9 @@ pub fn send_to_open_window(
     // Enter (the input is web-backed and ignores posted key events). The Send button still
     // answers AXPress, which needs no focus and no activation, so it is tried next — this is
     // still a non-activating route and stays available to background-only sends.
-    require_compose_text(&target.name, compose_value().as_deref(), text)?;
+    if !keep_sending(&target.name, compose_value().as_deref(), text)? {
+        return Ok(());
+    }
     if press_send_button(window.as_raw()) && accepted(20) {
         return Ok(());
     }
@@ -2086,6 +2099,9 @@ pub fn send_to_open_window(
     // operation in this text path that can wait for focus, show the curtain, activate KakaoTalk,
     // raise the room, or post a global key. A background-only caller therefore cannot reach any
     // of those operations, including on the background Enter's failure path.
+    if drained() {
+        return Ok(());
+    }
     ctx.require_visible_fallback()?;
 
     // Enter posted to the pid is routed by KakaoTalk to its key window, and with several chats
@@ -2098,10 +2114,19 @@ pub fn send_to_open_window(
     std::thread::sleep(Duration::from_millis(200));
     // Checked inside front_then, immediately before the post: a focus change after the raise
     // must stop the Enter rather than submit another window's text.
-    front_then(pid, || {
+    match front_then(pid, || {
         on_target()?;
         press_key_global(KEY_RETURN, CGEventFlags::CGEventFlagNull)
-    })??;
+    }) {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) | Err(error) => {
+            // The raise and the focus write take a moment, and the box can drain inside it.
+            if drained() {
+                return Ok(());
+            }
+            return Err(error);
+        }
+    }
     if accepted(30) {
         return Ok(());
     }
@@ -2111,6 +2136,9 @@ pub fn send_to_open_window(
     // The room window is frontmost here (raised above), so the click at its button center
     // cannot land in any other window — the same coordinate-safety argument the chat-list
     // double-click relies on.
+    if drained() {
+        return Ok(());
+    }
     if click_send_button(window.as_raw(), pid, &on_target)? && accepted(30) {
         return Ok(());
     }
@@ -2335,8 +2363,7 @@ pub fn open_window_titles() -> Result<Vec<String>, SendError> {
 #[cfg(test)]
 mod keystroke_target_tests {
     use super::{
-        require_compose_text, require_key_target, type_checked, KeyTarget, KeystrokeRefusal,
-        SendError,
+        keep_sending, require_key_target, type_checked, KeyTarget, KeystrokeRefusal, SendError,
     };
 
     fn on(window: Option<bool>, element: Option<bool>) -> KeyTarget {
@@ -2406,22 +2433,23 @@ mod keystroke_target_tests {
             )),
             None
         );
-        assert_eq!(
-            refusal(require_compose_text(
-                "Synthetic Room",
-                Some("other"),
-                "hello"
-            )),
-            Some(KeystrokeRefusal::TextChanged)
-        );
-        assert_eq!(
-            refusal(require_compose_text(
-                "Synthetic Room",
-                Some("hello"),
-                "hello"
-            )),
-            None
-        );
+    }
+
+    #[test]
+    fn a_box_that_drained_after_the_poll_is_a_delivery_not_a_mismatch() {
+        // Still holding this message: press the next key.
+        assert!(keep_sending("Synthetic Room", Some("hello"), "hello").expect("holds the message"));
+        // Emptied by KakaoTalk after the acceptance poll gave up: the message went out, so stop
+        // without pressing anything else and without reporting a failure.
+        assert!(!keep_sending("Synthetic Room", Some(""), "hello").expect("drained is a delivery"));
+        // Anything else, including an unreadable value, stops the send.
+        for value in [Some("other"), Some("hello."), None] {
+            assert_eq!(
+                refusal(keep_sending("Synthetic Room", value, "hello").map(|_| ())),
+                Some(KeystrokeRefusal::TextChanged),
+                "{value:?}"
+            );
+        }
     }
 
     #[test]
