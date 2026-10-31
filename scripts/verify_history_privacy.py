@@ -25,7 +25,11 @@ UUID_LITERAL: Final = re.compile(
 PERSONAL_HOME: Final = re.compile(rb"/(?:Users|home)/[A-Za-z0-9._-]+/")
 INTEGER_LITERAL: Final = re.compile(rb"(?<![0-9A-Za-z_])\d[\d_]*\d(?![0-9A-Za-z_])")
 DB_NAME_LITERAL: Final = re.compile(rb"(?<![0-9A-Fa-f])[0-9a-f]{78}(?![0-9A-Fa-f])")
-SAFE_SYNTHETIC_UUIDS: Final = {b"00000000-1111-2222-3333-444444444444"}
+# The nil UUID (RFC 9562) is a fixed constant that identifies no device or account.
+SAFE_SYNTHETIC_UUIDS: Final = {
+    b"00000000-1111-2222-3333-444444444444",
+    b"00000000-0000-0000-0000-000000000000",
+}
 SAFE_SYNTHETIC_DB_NAMES: Final = {
     b"de345a8eb68ff0db3c1f8b94817936a00471d335162afc05cdfc758f638a33d427ea7742d4d420"
 }

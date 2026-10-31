@@ -38,6 +38,15 @@ git -C "${repo}" gc --prune=now --quiet
 
 python3 "${root}/scripts/verify_history_privacy.py" "${repo}" HEAD >/dev/null
 
+printf '%s\n' 'const NIL: &str = "00000000-0000-0000-0000-000000000000";' \
+  > "${repo}/src/kakao/accounts.rs"
+git -C "${repo}" add .
+git -C "${repo}" commit -qm nil-uuid-fixture
+if ! python3 "${root}/scripts/verify_history_privacy.py" "${repo}" HEAD >/dev/null; then
+  echo "history scanner rejected the nil UUID, which identifies nobody" >&2
+  exit 1
+fi
+
 git -C "${repo}" tag v0.1.0
 mkdir -p "${repo}/docs"
 printf '%s\n' 'release-safe' > "${repo}/docs/release.txt"
