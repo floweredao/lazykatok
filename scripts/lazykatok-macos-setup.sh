@@ -11,7 +11,7 @@ if ! command -v "$LAZYKATOK_BIN" >/dev/null 2>&1; then
   elif [ -x "$CLONE_ROOT/target/debug/lazykatok" ]; then
     LAZYKATOK_BIN="$CLONE_ROOT/target/debug/lazykatok"
   else
-    echo "lazykatok binary not found. Run cargo install --git https://github.com/changeroa/lazykatok, or set LAZYKATOK_BIN=/path/to/lazykatok." >&2
+    echo "lazykatok binary not found. Run cargo install --git https://github.com/floweredao/lazykatok, or set LAZYKATOK_BIN=/path/to/lazykatok." >&2
     exit 127
   fi
 fi

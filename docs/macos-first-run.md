@@ -26,7 +26,7 @@ LAZYKATOK_BIN=target/release/lazykatok scripts/lazykatok-macos-setup.sh
 `lazykatok: command not found`가 나오면 먼저 설치와 PATH를 확인합니다.
 
 ```bash
-cargo install --git https://github.com/changeroa/lazykatok
+cargo install --git https://github.com/floweredao/lazykatok
 export PATH="$HOME/.cargo/bin:$PATH"
 lazykatok permissions macos --accessibility
 ```
