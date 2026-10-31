@@ -125,6 +125,54 @@ fn cli_doctor_recommends_sync_when_the_archive_is_gone_before_any_index() {
     );
 }
 
+/// The doctor payload is where "which files is this install reading" gets answered, next to
+/// `data_dir` and `semantic_index`. The archive entry must carry its path, not only a status.
+#[test]
+fn cli_doctor_reports_the_archive_path_beside_its_status() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let data_dir = dir.path().to_str().expect("utf8 path").to_string();
+    let doctor = || -> serde_json::Value {
+        let output = Command::cargo_bin("lazykatok")
+            .expect("lazykatok binary")
+            .env("HOME", dir.path())
+            .args(["--data-dir", &data_dir, "doctor", "--json"])
+            .output()
+            .expect("run doctor");
+        serde_json::from_slice(&output.stdout).expect("doctor json")
+    };
+    let expected_path = format!("{data_dir}/archive.sqlite3");
+
+    let before = doctor();
+    assert_eq!(
+        before["archive"]["path"].as_str(),
+        Some(expected_path.as_str()),
+        "{before}"
+    );
+    assert_eq!(before["archive"]["status"], "missing", "{before}");
+
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
+        .args([
+            "--data-dir",
+            &data_dir,
+            "sync",
+            "--source",
+            "fixture",
+            &fixture_path("replies.jsonl"),
+            "--json",
+        ])
+        .assert()
+        .success();
+
+    let after = doctor();
+    assert_eq!(
+        after["archive"]["path"].as_str(),
+        Some(expected_path.as_str()),
+        "{after}"
+    );
+    assert_eq!(after["archive"]["status"], "present", "{after}");
+}
+
 /// `doctor` must not call an index fresh that semantic search will refuse. An index built at one
 /// embedding dimension is unusable once the configured dimension changes.
 #[test]
