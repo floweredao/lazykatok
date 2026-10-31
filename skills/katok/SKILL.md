@@ -131,6 +131,11 @@ prunes its own database and outliving that is the reason this archive exists, so
 messages older than the source's reach are kept, and a chat the source did not
 mention at all is skipped. Preview before deleting — lazykatok cannot undo it.
 
+When a prune removes at least one message, lazykatok also rewrites the archive
+file so no copy of the removed text survives on disk, and deletes the semantic
+index that embedded it (`semantic_index_removed: true` in the JSON). Run
+`lazykatok index --json` afterwards before semantic or hybrid search.
+
 ## Media Attachments
 
 `lazykatok media get --chat <chat-id> --out <dir>` resolves each media message through four tiers in order: the decrypted local cache, a GET of the attachment's own presigned CDN URL verified by SHA-1, the decrypted `.thm` thumbnail, and finally a metadata stub. Apart from an OpenAI-compatible embedding endpoint the user configured and the local model download on the first `lazykatok index`, that CDN GET is the only network access in the CLI, and `--no-cdn` disables it so resolution stays entirely local.
