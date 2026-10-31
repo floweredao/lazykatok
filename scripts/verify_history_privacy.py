@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 # /// script
-# requires-python = ">=3.11"
+# requires-python = ">=3.9"
 # ///
 # ─── How to run ───
-# uv run scripts/verify_history_privacy.py
+# python3 scripts/verify_history_privacy.py <repo> <revision-range>
+# The minimum matches the interpreter that ships with macOS, so the gate CI runs
+# can also be run locally without installing another Python.
 
 from __future__ import annotations
 
@@ -35,7 +37,7 @@ IDENTITY_PATH_SUFFIXES: Final = (
 )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class Finding:
     commit_id: str
     path: str

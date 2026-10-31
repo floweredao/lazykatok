@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Runs on Python 3.9 or newer, including the interpreter that ships with macOS.
 from __future__ import annotations
 
 import re
@@ -28,7 +29,7 @@ INTEGER_LITERAL = re.compile(r"(?<![0-9A-Za-z_])\d[\d_]*\d(?![0-9A-Za-z_])")
 DB_NAME_LITERAL = re.compile(r"(?<![0-9A-Fa-f])[0-9a-f]{78}(?![0-9A-Fa-f])")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class CheckResult:
     name: str
     ok: bool
