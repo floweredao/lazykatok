@@ -63,7 +63,7 @@ lazykatok sync --source macos         # 로컬 카톡 DB → 아카이브 동기
 lazykatok index                       # 의미 검색용 로컬 벡터 인덱스 생성
 lazykatok watch --select --reply --accept-use-policy --source macos   # 방 선택 → 대화 TUI
 lazykatok watch --select --reply --reply-no-open --accept-use-policy --source macos   # 이미 열린 방에만 전송
-lazykatok search keyword 회식 --limit 5   # 키워드 검색 (기본 10건)
+lazykatok search keyword 회식 --limit 5   # 키워드 검색 (기본 10건, 최근 것부터)
 lazykatok search bm25 회식                # BM25 검색
 lazykatok search semantic "언제 만나기로 했지"  # 의미 검색 (index 필요)
 ```
