@@ -185,6 +185,8 @@ python3 scripts/verify_release_config.py
 python3 scripts/verify_history_privacy.py . origin/main..HEAD
 ```
 
+두 파이썬 스크립트는 macOS에 기본으로 들어 있는 파이썬(3.9)에서도 그대로 돌아갑니다.
+
 ## 라이선스
 
 MIT. 이 프로젝트는 개인적으로만 사용 가능하고 사용 책임은 본인에게 있습니다. 타인에게 공유하거나 상업적 사용을 하지마세요.
