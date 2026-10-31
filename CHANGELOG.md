@@ -72,6 +72,10 @@
 
 ### Semantic search
 
+- `wipe-index --yes --json` reports whether it removed anything:
+  `semantic_removed` is `false` when there was no semantic directory and `true`
+  when one was dropped. It was always `true`, so a caller could not tell a wipe
+  that dropped a live index from one that found nothing.
 - `KATOK_EMBED_URL` no longer switches to the HTTP embedder when `katok.toml`
   sets `embedder_provider` to `mock` or `local-test`. Only `KATOK_EMBEDDER`
   was checked, so an endpoint exported in the environment overrode an offline
