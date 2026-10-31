@@ -1993,7 +1993,7 @@ fn run_doctor(
         "data_dir": data_dir,
         "archive": archive_path,
         "semantic_index": semantic_dir,
-        "freshness": freshness::load(&data_dir, &archive_path, &semantic_dir)?,
+        "freshness": freshness::load(&data_dir, &archive_path, &semantic_dir, &config)?,
         "local_first": true,
         "macos": cfg!(target_os = "macos"),
         "source_adapter": {

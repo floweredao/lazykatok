@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 pub use live::{
-    committed_cursor, index_semantic_live, index_semantic_live_for_parents,
+    check_committed_index, committed_cursor, index_semantic_live, index_semantic_live_for_parents,
     semantic_search_live_with_config, SemanticIndexReport, STORE_DIR,
 };
 pub use mock::{

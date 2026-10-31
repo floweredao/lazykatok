@@ -30,6 +30,22 @@ pub(crate) fn create_embedder(config: &KatokConfig) -> Result<Box<dyn SemanticEm
     }
 }
 
+/// The id [`create_embedder`] would record vectors under, without loading a model or
+/// building a client, so a status check can compare it with the committed index.
+pub(crate) fn embedder_id(config: &KatokConfig) -> String {
+    let config = config.with_env_overrides();
+    match config.embedder_family() {
+        "mock" => LOCAL_TEST_EMBEDDER_ID.to_string(),
+        "openai-compatible" => {
+            openai_embedder_id(&config.embedder_model, config.passage_prefix.as_deref())
+        }
+        _ => LOCAL_EMBEDDER_ID.to_string(),
+    }
+}
+
+const LOCAL_EMBEDDER_ID: &str = "embeddinggemma/local";
+const LOCAL_TEST_EMBEDDER_ID: &str = "embeddinggemma/local-test";
+
 struct FastEmbedder {
     inner: TextEmbedding,
 }
@@ -67,7 +83,7 @@ fn fastembed_cache_dir() -> PathBuf {
 
 impl SemanticEmbedder for FastEmbedder {
     fn id(&self) -> &str {
-        "embeddinggemma/local"
+        LOCAL_EMBEDDER_ID
     }
 
     fn embed(&mut self, texts: &[String], batch_size: usize) -> Result<Vec<Vec<f32>>> {
@@ -289,7 +305,7 @@ impl DeterministicEmbedder {
 
 impl SemanticEmbedder for DeterministicEmbedder {
     fn id(&self) -> &str {
-        "embeddinggemma/local-test"
+        LOCAL_TEST_EMBEDDER_ID
     }
 
     fn embed(&mut self, texts: &[String], _batch_size: usize) -> Result<Vec<Vec<f32>>> {
@@ -338,6 +354,25 @@ fn to_embedding_error(error: impl std::fmt::Display) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embedder_id_matches_the_id_the_built_embedder_records() {
+        let mut openai = KatokConfig {
+            embedder_provider: "openai-compatible".to_string(),
+            embedder_url: Some("http://127.0.0.1:9/v1".to_string()),
+            embedder_model: "synthetic-model".to_string(),
+            ..KatokConfig::default()
+        };
+        openai.passage_prefix = Some("passage: ".to_string());
+        let mock = KatokConfig {
+            embedder_provider: "local-test".to_string(),
+            ..KatokConfig::default()
+        };
+        for config in [openai, mock] {
+            let built = create_embedder(&config).expect("build embedder");
+            assert_eq!(embedder_id(&config), built.id());
+        }
+    }
 
     #[test]
     fn endpoint_resolution_covers_common_url_shapes() {

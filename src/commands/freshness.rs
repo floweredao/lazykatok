@@ -55,6 +55,7 @@ pub(crate) fn load(
     data_dir: &Path,
     archive_path: &Path,
     semantic_dir: &Path,
+    config: &lazykatok::config::KatokConfig,
 ) -> Result<FreshnessStatus> {
     let path = status_path(data_dir);
     let mut status = if path.exists() {
@@ -67,7 +68,10 @@ pub(crate) fn load(
     let committed_error = match &committed_cursor {
         Err(lazykatok::Error::SemanticIndexMissing) => None,
         Err(error) => Some(error.to_string()),
-        Ok(_) => None,
+        // Search also refuses an index built by another embedder or at another dimension.
+        Ok(_) => lazykatok::semantic::check_committed_index(semantic_dir, config)
+            .err()
+            .map(|error| error.to_string()),
     };
     status.last_index = committed_cursor.ok().map(|cursor| IndexFreshness {
         completed_at: cursor.completed_at,
@@ -137,7 +141,7 @@ fn recommendation(
             sync_before_search: false,
             index_before_semantic_search: true,
             reason: format!(
-                "semantic index is corrupt ({error}); run katok index --json before semantic search"
+                "semantic index cannot be used ({error}); run katok index --json before semantic search"
             ),
         };
     }
