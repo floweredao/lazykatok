@@ -3106,8 +3106,12 @@ fn run_wipe_index(yes: bool, json: bool, semantic_dir: &Path) -> Result<()> {
     if !yes {
         anyhow::bail!("refusing to wipe semantic index without --yes");
     }
-    if semantic_dir.exists() {
+    // Report what this run did. A constant `true` left a wipe that found no index
+    // indistinguishable from one that dropped a live index, which is the only thing the
+    // payload is there to say.
+    let removed = semantic_dir.exists();
+    if removed {
         std::fs::remove_dir_all(semantic_dir).context("remove semantic index")?;
     }
-    print_payload(json, &serde_json::json!({"semantic_removed": true}))
+    print_payload(json, &serde_json::json!({"semantic_removed": removed}))
 }
