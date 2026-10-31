@@ -126,7 +126,7 @@ fn wal_path(path: &Path) -> PathBuf {
     PathBuf::from(wal)
 }
 
-fn database_modified(path: &Path) -> SystemTime {
+pub(super) fn database_modified(path: &Path) -> SystemTime {
     let modified = std::fs::metadata(path)
         .and_then(|meta| meta.modified())
         .unwrap_or(SystemTime::UNIX_EPOCH);
