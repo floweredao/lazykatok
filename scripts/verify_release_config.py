@@ -15,7 +15,11 @@ UUID_LITERAL = re.compile(
     r"[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\b"
 )
 PERSONAL_HOME = re.compile(r"/(?:Users|home)/[A-Za-z0-9._-]+/")
-SAFE_SYNTHETIC_UUIDS = {"00000000-1111-2222-3333-444444444444"}
+# The nil UUID (RFC 9562) is a fixed constant that identifies no device or account.
+SAFE_SYNTHETIC_UUIDS = {
+    "00000000-1111-2222-3333-444444444444",
+    "00000000-0000-0000-0000-000000000000",
+}
 SAFE_SYNTHETIC_DB_NAMES = {
     "de345a8eb68ff0db3c1f8b94817936a00471d335162afc05cdfc758f638a33d427ea7742d4d420"
 }
