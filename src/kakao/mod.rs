@@ -6,6 +6,7 @@
 //! numbers, derived keys, database paths, or database filenames. Only counts,
 //! ids, timestamps, and status are ever emitted.
 
+pub mod accounts;
 pub mod auth;
 #[cfg(all(target_os = "macos", feature = "private-send"))]
 pub mod ax_send;

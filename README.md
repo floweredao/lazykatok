@@ -63,7 +63,7 @@ lazykatok search semantic "언제 만나기로 했지"  # 의미 검색 (index �
 
 `--source`를 생략하면 설정 파일의 `source_adapter`(기본값 `fixture`, JSONL 경로
 필요)를 쓰므로 실제 카톡을 읽을 때는 `--source macos`를 붙이세요. `--data-dir`과
-`--config`는 하위 명령 앞에 둡니다 (`lazykatok --data-dir <dir> sync ...`).
+`--config`, `--account`는 하위 명령 앞에 둡니다 (`lazykatok --data-dir <dir> sync ...`).
 
 그 밖의 예:
 
@@ -73,6 +73,30 @@ lazykatok search keyword <질의> --json
 lazykatok search hybrid <질의> --json    # BM25 + 의미 검색을 RRF로 결합 (부모 윈도우 단위)
 lazykatok transcript --chat <chat_id> --from 2026-08-01 --to 2026-08-31 --out export.md
 ```
+
+## 계정 고르기
+
+한 맥에서 카톡 계정을 두 개 이상 쓴 적이 있으면 로그아웃한 계정의 데이터베이스도
+그대로 남습니다. 어떤 계정으로 읽을지는 `--account`로 고르고, 계정 목록은
+`accounts`로 봅니다.
+
+```bash
+lazykatok accounts                      # 열리는 계정 목록 (최근 기록 순)
+lazykatok accounts --json
+lazykatok --account latest sync --source macos    # 카톡이 지금 쓰는 계정
+lazykatok --account <user_id> sync --source macos # 목록에서 고른 계정
+```
+
+- `latest`는 데이터베이스가 가장 최근에 기록된 계정, 즉 카톡이 지금 쓰는 계정입니다.
+  카톡 설정 파일에는 한 번이라도 로그인한 모든 계정의 기록이 남아 있어 그것만으로는
+  현재 계정을 알 수 없습니다.
+- 계정마다 아카이브가 따로 유지됩니다. 데이터 디렉터리에 이미 자리 잡은 계정은 그
+  디렉터리를 그대로 쓰고, 다른 계정은 `<data-dir>/accounts/<user_id>`로 읽습니다.
+  두 계정의 대화가 한 아카이브에 섞이지 않습니다.
+- `watch --select`를 터미널에서 실행하면 계정이 둘 이상일 때 방 목록 전에 계정을
+  먼저 묻습니다. 그냥 Enter를 누르면 1번(가장 최근 계정)이 선택됩니다.
+- 목록에는 user id, 최근 기록 시각, 열리는 데이터베이스 수만 나옵니다. 이름이나
+  파일명은 출력하지 않습니다.
 
 ## 임베딩 백엔드
 

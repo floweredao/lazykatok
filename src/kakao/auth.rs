@@ -107,17 +107,17 @@ impl AuthOptions {
     }
 }
 
-fn katok_cache_path(data_dir: &Path) -> PathBuf {
+pub(super) fn katok_cache_path(data_dir: &Path) -> PathBuf {
     data_dir.join("kakao").join("auth.json")
 }
 
-fn k_skill_cache_path(home: &Path) -> PathBuf {
+pub(super) fn k_skill_cache_path(home: &Path) -> PathBuf {
     home.join(".cache")
         .join("k-skill")
         .join("kakaotalk-mac-auth.json")
 }
 
-fn preference_paths(home: &Path) -> Vec<PathBuf> {
+pub(super) fn preference_paths(home: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     let pref_dir = home
         .join("Library")
@@ -151,7 +151,7 @@ fn preference_paths(home: &Path) -> Vec<PathBuf> {
     paths
 }
 
-fn platform_uuid() -> Result<String> {
+pub(super) fn platform_uuid() -> Result<String> {
     let output = Command::new("/usr/sbin/ioreg")
         .args(["-rd1", "-c", "IOPlatformExpertDevice"])
         .output()
@@ -184,7 +184,7 @@ fn is_platform_uuid(candidate: &str) -> bool {
 
 /// Best-effort parse of a preference plist into `(candidate_user_ids,
 /// active_account_hash)` via `plutil -convert xml1`.
-fn read_plist(path: &Path) -> Option<(Vec<i64>, Option<String>)> {
+pub(super) fn read_plist(path: &Path) -> Option<(Vec<i64>, Option<String>)> {
     let output = Command::new("/usr/bin/plutil")
         .args(["-convert", "xml1", "-o", "-"])
         .arg(path)
@@ -292,7 +292,7 @@ fn is_active_account_hash(hash_hex: &str, value_tag: &str, value_body: &str) -> 
 }
 
 /// Read ONLY `user_id` from a JSON cache file.
-fn read_user_id_from_json(path: &Path) -> Option<i64> {
+pub(super) fn read_user_id_from_json(path: &Path) -> Option<i64> {
     let raw = std::fs::read_to_string(path).ok()?;
     let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
     match value.get("user_id")? {
@@ -303,7 +303,7 @@ fn read_user_id_from_json(path: &Path) -> Option<i64> {
 }
 
 /// Read `{user_id, uuid}` from the katok cache (both required).
-fn read_katok_cache(path: &Path) -> Option<(i64, String)> {
+pub(super) fn read_katok_cache(path: &Path) -> Option<(i64, String)> {
     let raw = std::fs::read_to_string(path).ok()?;
     let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
     let user_id = match value.get("user_id")? {
@@ -320,7 +320,7 @@ fn read_katok_cache(path: &Path) -> Option<(i64, String)> {
 }
 
 /// Persist only `{user_id, uuid}` at 0600 for the next run.
-fn persist_katok_cache(path: &Path, user_id: i64, uuid: &str) {
+pub(super) fn persist_katok_cache(path: &Path, user_id: i64, uuid: &str) {
     if let Some(parent) = path.parent() {
         if crate::paths::ensure_private_dir(parent).is_err() {
             return;
@@ -363,7 +363,7 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 /// Brute-force the `user_id` whose `sha512(user_id.to_string())` hex equals
 /// `target_hash`, using rayon across `0..=max_user_id`.
-fn recover_user_id_from_sha512(target_hash: &str, max_user_id: i64) -> Option<i64> {
+pub(super) fn recover_user_id_from_sha512(target_hash: &str, max_user_id: i64) -> Option<i64> {
     // Lowercase hex only, matching the reference regex `[0-9a-f]{128}`. An
     // uppercase target can never match the lowercase digest comparison, so
     // reject it before launching the rayon scan.
@@ -395,7 +395,7 @@ fn sha512_hex_eq(digest: &[u8], target_hex: &[u8]) -> bool {
 
 /// Verify a `(user_id, uuid)` by deriving its key and opening any DB. Returns
 /// the openable DB list when the key works against at least one file.
-fn verify(user_id: i64, uuid: &str, database_files: &[PathBuf]) -> Option<Vec<PathBuf>> {
+pub(super) fn verify(user_id: i64, uuid: &str, database_files: &[PathBuf]) -> Option<Vec<PathBuf>> {
     let key = derive::secure_key(user_id, uuid);
     let derived_name = derive::database_name(user_id, uuid);
     let derived_name_db = format!("{derived_name}.db");
