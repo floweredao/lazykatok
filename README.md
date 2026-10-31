@@ -8,11 +8,11 @@ Apple Silicon macOS 전용.
 > a room picker and live chat TUI with replies, a local SQLite archive, and keyword,
 > BM25 and semantic search over it. It reads the KakaoTalk desktop app's own data on
 > your Mac and sends nothing anywhere unless you configure an embedding endpoint.
-> Install with `cargo install --git https://github.com/changeroa/lazykatok`, then run
+> Install with `cargo install --git https://github.com/floweredao/lazykatok`, then run
 > `lazykatok doctor --macos-probe`. The sections below list every command, setting
 > and environment variable; [CONTRIBUTING.md](CONTRIBUTING.md) is in English.
 
-[![CI](https://github.com/changeroa/lazykatok/actions/workflows/ci.yml/badge.svg)](https://github.com/changeroa/lazykatok/actions/workflows/ci.yml)
+[![CI](https://github.com/floweredao/lazykatok/actions/workflows/ci.yml/badge.svg)](https://github.com/floweredao/lazykatok/actions/workflows/ci.yml)
 
 ## 특징
 
@@ -40,14 +40,14 @@ Apple Silicon macOS 전용.
 ## 설치
 
 ```bash
-cargo install --git https://github.com/changeroa/lazykatok
+cargo install --git https://github.com/floweredao/lazykatok
 # 바이너리: ~/.cargo/bin/lazykatok (이 디렉터리가 PATH에 있어야 합니다)
 ```
 
 클론해서 고쳐 쓰려면:
 
 ```bash
-git clone https://github.com/changeroa/lazykatok.git
+git clone https://github.com/floweredao/lazykatok.git
 cd lazykatok
 cargo install --path .     # 또는 cargo build --release → target/release/lazykatok
 ```
