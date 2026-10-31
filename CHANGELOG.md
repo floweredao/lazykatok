@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Send
+
+- No keystroke is posted unless it would land in the intended place. KakaoTalk
+  routes every keystroke to its focused window, so with several chat windows
+  open an Enter, a paste, or typed search text meant for one room could reach
+  another: an Enter posted to the app sent whatever another room's box held,
+  and a focus change while typing put the rest of the text in a different
+  room. Before every Enter, paste, Send-button click, and typed character,
+  `send` now checks that the target window is KakaoTalk's focused window and
+  the target field its focused element, and before an Enter or Send-button
+  press that the compose box holds exactly the message. When a check fails it
+  stops and says which one, without pressing anything. The background Enter is
+  skipped when the room is not focused, and the room's own Send button is used
+  instead.
+- A failed or completed room open no longer leaves the search query in the
+  chat list's search box. Once the list was filtered down, the chat list window
+  was no longer recognised, so the search box that got cleared, and on a retry
+  typed into, belonged to an open chat window instead.
+
 ### Media
 
 - `media get` extracts emoticons and stickers (message types 12, 20, 25) as
