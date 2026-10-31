@@ -206,6 +206,10 @@ URL은 `/embeddings`로 끝나면 그대로, `/v1`로 끝나면 `/embeddings`를
   전송됩니다. 그 밖에 기본 로컬 백엔드의 첫 `index`는 모델 파일을 내려받고,
   `media get`과 `media backfill`은 첨부의 CDN 링크를 요청합니다
   (`media get --no-cdn`으로 끔).
+- `sync --prune-deleted`가 메시지를 하나라도 지우면, 지운 텍스트가 파일에 남지
+  않도록 아카이브를 다시 쓰고(`VACUUM`) 그 텍스트를 담고 있던 의미 인덱스
+  디렉터리를 삭제합니다. 의미 검색을 다시 쓰려면 `lazykatok index`를 실행하세요.
+  JSON 출력의 `semantic_index_removed`가 인덱스 삭제 여부를 알려 줍니다.
 - 이 저장소는 공개입니다. 실제 대화에서 유래한 어떤 값도 커밋되지 않으며,
   테스트는 합성 fixture만 사용합니다 (`scripts/verify_release_config.py`의
   프라이버시 오라클이 이를 계속 검사합니다).
