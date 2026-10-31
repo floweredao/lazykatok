@@ -176,8 +176,16 @@ fn apply_reply_input_events(
                     batch.actions.push(ReplyTerminalAction::Quit);
                     break;
                 }
+                if key.code == KeyCode::Esc && state.draft().is_empty() {
+                    batch.actions.push(ReplyTerminalAction::Quit);
+                    break;
+                }
                 let mut edited = false;
                 match key.code {
+                    KeyCode::Esc => {
+                        state.take_draft();
+                        edited = true;
+                    }
                     KeyCode::Enter | KeyCode::Char('\r' | '\n') => {
                         batch
                             .actions
@@ -1524,7 +1532,7 @@ where
         }
         ReplyCommand::Quit => return finish_reply_quit(terminal, send_state),
         ReplyCommand::Help => terminal.render_system(
-            "lazykatok: Enter send; Left/Right/Home/End or Ctrl-A/B/E/F move; Backspace/Delete, Ctrl-W/U/K edit; Up/Down/PgUp/PgDn scroll; Ctrl-C/Ctrl-D or /quit quit".to_string(),
+            "lazykatok: Enter send; Left/Right/Home/End or Ctrl-A/B/E/F move; Backspace/Delete, Ctrl-W/U/K edit; Up/Down/PgUp/PgDn scroll; Esc clears the draft, or quits when it is empty; Ctrl-C/Ctrl-D or /quit quit".to_string(),
         )?,
         ReplyCommand::Empty => {}
         ReplyCommand::Ignored => {
@@ -2681,6 +2689,20 @@ mod reply_terminal_tests {
         );
         assert_eq!(state.draft(), "c");
         assert_eq!(state.cursor(), 0);
+    }
+
+    #[test]
+    fn escape_clears_a_draft_and_quits_from_an_empty_one() {
+        let mut state = ReplyUiState::default();
+        state.paste("half typed");
+
+        let cleared = apply_reply_input_events(&mut state, [key(KeyCode::Esc, KeyModifiers::NONE)]);
+        assert_eq!(state.draft(), "");
+        assert_eq!(cleared.redraw, ReplyRedraw::Input);
+        assert!(cleared.actions.is_empty());
+
+        let quit = apply_reply_input_events(&mut state, [key(KeyCode::Esc, KeyModifiers::NONE)]);
+        assert_eq!(quit.actions, [ReplyTerminalAction::Quit]);
     }
 
     #[test]
