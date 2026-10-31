@@ -6,6 +6,7 @@ use lazykatok::{
     paths::{default_data_dir, ensure_private_dir, resolve_semantic_dir},
 };
 
+mod account;
 mod cli;
 mod commands;
 mod support;
@@ -41,9 +42,23 @@ fn run(cli: Cli) -> Result<()> {
     let config = KatokConfig::load(cli.config.as_deref())
         .context("load config")?
         .with_env_overrides();
-    let data_dir = match cli.data_dir {
+    let base_data_dir = match cli.data_dir {
         Some(path) => path,
         None => default_data_dir().context("resolve default data directory")?,
+    };
+    let account = match cli.account {
+        Some(choice) => Some(account::resolve(&base_data_dir, &choice)?),
+        None if account::wants_prompt(&cli.command, &config) => account::prompt(&base_data_dir)?,
+        None => None,
+    };
+    let data_dir = match &account {
+        Some(account) => {
+            // Every reader in this process, and the `send` child the reply TUI starts, takes
+            // the account from here.
+            std::env::set_var("KATOK_KAKAO_USER_ID", account.user_id.to_string());
+            account.data_dir.clone()
+        }
+        None => base_data_dir,
     };
     ensure_private_dir(&data_dir).context("create private data directory")?;
     let archive_path = data_dir.join("archive.sqlite3");

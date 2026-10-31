@@ -20,6 +20,8 @@ Use the `lazykatok` CLI as the only execution surface. This skill stays thin: it
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"       # use when lazykatok is not found after cargo install
 lazykatok doctor --json
+lazykatok accounts --json                     # KakaoTalk accounts whose databases open here
+lazykatok --account <user-id|latest> sync --source macos --json   # read one account; each keeps its own archive
 lazykatok permissions macos                   # opens Full Disk Access settings
 lazykatok permissions macos --accessibility   # also opens Accessibility settings
 lazykatok doctor --macos-probe --json        # explicit macOS permission/app-data probe
