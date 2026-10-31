@@ -62,6 +62,62 @@ fn exporting_the_same_range_twice_writes_identical_bytes() {
     assert_eq!(second.messages, 2);
 }
 
+/// An output directory the caller already had is theirs. The transcript lands in it owner-only,
+/// and the directory keeps the permissions it came with: tightening it would change how every
+/// other user and process sees a path lazykatok was only asked to write into.
+#[cfg(unix)]
+#[test]
+fn an_existing_output_directory_keeps_its_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let messages = vec![message("m001", "A", 0, "첫 메시지")];
+    let (dir, archive) = archive_with(&messages);
+    let existing = dir.path().join("shared");
+    std::fs::create_dir(&existing).expect("create output dir");
+    std::fs::set_permissions(&existing, std::fs::Permissions::from_mode(0o755))
+        .expect("set output dir mode");
+
+    let report = export_transcript(&archive, "A", None, &existing).expect("export");
+
+    let mode = |path: &std::path::Path| {
+        std::fs::metadata(path)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    assert_eq!(
+        mode(&existing),
+        0o755,
+        "the directory the caller named was re-permissioned"
+    );
+    assert_eq!(
+        mode(&report.path.expect("a file for a non-empty range")),
+        0o600,
+        "the transcript itself must stay owner-only"
+    );
+}
+
+/// A directory the export creates holds raw message bodies, so it is created owner-only.
+#[cfg(unix)]
+#[test]
+fn an_output_directory_the_export_creates_is_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let messages = vec![message("m001", "A", 0, "첫 메시지")];
+    let (dir, archive) = archive_with(&messages);
+    let fresh = dir.path().join("new").join("nested");
+
+    export_transcript(&archive, "A", None, &fresh).expect("export");
+
+    let mode = std::fs::metadata(&fresh)
+        .expect("metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o700);
+}
+
 #[test]
 fn a_range_with_no_messages_writes_nothing_and_leaves_earlier_exports_alone() {
     let messages = vec![message("m001", "A", 0, "첫 메시지")];

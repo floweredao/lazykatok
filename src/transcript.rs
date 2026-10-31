@@ -120,7 +120,7 @@ pub fn export_transcript(
     body.push(String::new());
     body.extend(lines);
 
-    crate::paths::ensure_private_dir(out_dir)?;
+    crate::paths::ensure_output_dir(out_dir)?;
     let path = out_dir.join(format!(
         "{}-{}-{}.md",
         sanitize(chat_id),
