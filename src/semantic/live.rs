@@ -12,7 +12,7 @@ use std::{collections::HashMap, path::Path, time::Duration};
 
 use super::{
     archive_revision, archive_revision_for_parents, content_hash, current_generation,
-    embedder::create_embedder,
+    embedder::{create_embedder, embedder_id},
     mock::write_semantic_documents_plain_for_parents,
     store::{LocalVectorStore, StoredVector, VectorUpsert},
     CHUNK_SCHEMA_ID, CURRENT_FILE, GENERATIONS_DIR, SOURCE_ID,
@@ -232,6 +232,17 @@ pub async fn semantic_search_live_with_config(
 
 pub fn committed_cursor(root: &Path) -> Result<SemanticCursor> {
     load_cursor(&current_generation(root)?)
+}
+
+/// Whether semantic search could use the committed index with this config: the cursor was
+/// written by the same embedder, and every stored vector has the configured dimension.
+/// The archive revision is not compared here.
+pub fn check_committed_index(root: &Path, config: &KatokConfig) -> Result<()> {
+    let generation = current_generation(root)?;
+    validate_cursor(&load_cursor(&generation)?, &embedder_id(config))?;
+    let dimension = usize::from(config.with_env_overrides().vector_dimension);
+    LocalVectorStore::open_existing(&generation.join(STORE_DIR), dimension)?.content_pairs()?;
+    Ok(())
 }
 
 fn validate_generation(
