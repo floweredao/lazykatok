@@ -1178,3 +1178,62 @@ fn cli_error_cause_names_each_underlying_error_once() {
     assert!(stderr.contains("timestamp parse error"), "{stderr}");
     once(stderr, "stderr");
 }
+
+/// `wipe-index` is what an agent runs when semantic search is unusable, and its payload is the
+/// only way to tell a wipe that dropped an index from one that found nothing to drop.
+#[test]
+fn cli_wipe_index_reports_whether_it_removed_an_index() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let data_dir = dir.path().to_str().expect("utf8 path").to_string();
+    let wipe = || -> serde_json::Value {
+        let output = Command::cargo_bin("lazykatok")
+            .expect("lazykatok binary")
+            .args(["--data-dir", &data_dir, "wipe-index", "--yes", "--json"])
+            .output()
+            .expect("run wipe-index");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).expect("wipe json")
+    };
+
+    assert_eq!(
+        wipe()["semantic_removed"],
+        false,
+        "no index has ever been built in this data dir"
+    );
+
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
+        .args([
+            "--data-dir",
+            &data_dir,
+            "sync",
+            "--source",
+            "fixture",
+            &fixture_path("replies.jsonl"),
+            "--json",
+        ])
+        .assert()
+        .success();
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
+        .env("KATOK_EMBEDDER", "local-test")
+        .args(["--data-dir", &data_dir, "index", "--json"])
+        .assert()
+        .success();
+
+    assert_eq!(
+        wipe()["semantic_removed"],
+        true,
+        "an index was there to remove"
+    );
+    assert_eq!(
+        wipe()["semantic_removed"],
+        false,
+        "the second wipe had nothing left to remove"
+    );
+    assert!(!std::path::Path::new(&data_dir).join("semantic").exists());
+}
