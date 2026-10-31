@@ -32,12 +32,15 @@ pub fn keyword_search_with_snippet(
         .replace('%', "\\%")
         .replace('_', "\\_");
     let pattern = format!("%{escaped}%");
+    // A literal match carries no relevance score, so the limit decides which matches a caller
+    // ever sees. Newest first: an archive holds years of messages, and a chronological cut from
+    // the start answers every query with the oldest mentions and hides every recent one.
     let mut stmt = archive
         .connection()
         .prepare(
             "SELECT chunk_id FROM chunks
          WHERE text LIKE ?1 ESCAPE '\\'
-         ORDER BY started_at, chunk_id
+         ORDER BY started_at DESC, chunk_id DESC
          LIMIT ?2",
         )
         .map_err(Error::Sql)?;

@@ -73,6 +73,7 @@ environment variable; setting one is silently ignored and the run writes into th
 6. Run `lazykatok index --json` before semantic search when `freshness.recommendation.index_before_semantic_search` is `true` or after a sync that should affect vector search.
 7. Use `lazykatok search keyword ...`, `lazykatok search bm25 ...`, `lazykatok search semantic ...`, and `lazykatok search hybrid ...` for discovery.
    - A search returns a global top-k across rooms (default 10). For a person or topic that may occur across many rooms, raise `--limit` (for example 100) and group the returned hits by the stable `chat_id`; a room outside the first 10 is not an engine omission.
+   - `search keyword` is a literal substring match with no relevance score, so its limit keeps the newest matches and `rank` is recency order. `search bm25`, `semantic` and `hybrid` rank by relevance.
 8. Use `lazykatok chunk get ...` only for explicit retrieval.
 9. Run `lazykatok doctor --macos-probe --json` only for setup or permission diagnostics, because it may trigger a macOS "access data from other apps" prompt.
 
