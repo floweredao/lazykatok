@@ -124,3 +124,46 @@ fn cli_doctor_recommends_sync_when_the_archive_is_gone_before_any_index() {
         "{recommendation}"
     );
 }
+
+/// `doctor` must not call an index fresh that semantic search will refuse. An index built at one
+/// embedding dimension is unusable once the configured dimension changes.
+#[test]
+fn cli_doctor_asks_for_an_index_when_the_embedding_dimension_changed() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let data_dir = dir.path().to_str().expect("utf8 path").to_string();
+    let lazykatok = |dimension: &str, args: &[&str]| {
+        Command::cargo_bin("lazykatok")
+            .expect("lazykatok binary")
+            .env("HOME", dir.path())
+            .env("KATOK_EMBEDDER", "local-test")
+            .env("KATOK_EMBED_DIM", dimension)
+            .arg("--data-dir")
+            .arg(&data_dir)
+            .args(args)
+            .output()
+            .expect("run lazykatok")
+    };
+    let fixture = fixture_path("replies.jsonl");
+    assert!(
+        lazykatok("768", &["sync", "--source", "fixture", &fixture, "--json"])
+            .status
+            .success()
+    );
+    assert!(lazykatok("768", &["index", "--json"]).status.success());
+    let doctor = |dimension: &str| -> serde_json::Value {
+        serde_json::from_slice(&lazykatok(dimension, &["doctor", "--json"]).stdout)
+            .expect("doctor json")
+    };
+    assert_eq!(
+        doctor("768")["freshness"]["recommendation"]["index_before_semantic_search"],
+        false
+    );
+
+    let search = lazykatok("384", &["search", "semantic", "synthetic", "--json"]);
+    assert!(!search.status.success(), "search must refuse the old index");
+    let doctor = doctor("384");
+    assert_eq!(
+        doctor["freshness"]["recommendation"]["index_before_semantic_search"], true,
+        "{doctor}"
+    );
+}
