@@ -9,6 +9,12 @@
 
 ### Send
 
+- A send no longer reports a failure for a message KakaoTalk already took. The
+  compose box is polled for a second after each key, and a box emptied just
+  after that poll gave up is this send's own delivery arriving late, not a
+  changed box: it now ends the send successfully instead of raising the
+  compose-text mismatch, which a caller could have answered by sending the same
+  message twice. A box holding anything else still stops the send.
 - No keystroke is posted unless it would land in the intended place. KakaoTalk
   routes every keystroke to its focused window, so with several chat windows
   open an Enter, a paste, or typed search text meant for one room could reach
