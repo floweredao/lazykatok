@@ -173,6 +173,47 @@ fn semantic_document_rebuild_prunes_stale_parent_markdown_when_indexed() {
 }
 
 #[test]
+fn keyword_search_keeps_the_newest_matches_when_there_are_more_than_the_limit() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let archive = Archive::open(&dir.path().join("archive.sqlite3")).expect("open archive");
+    let message = |day: u32| RawMessage {
+        account_hash: "acct".to_string(),
+        chat_id: "chat-limit".to_string(),
+        chat_name: "Limit Fixture".to_string(),
+        chat_type: "group".to_string(),
+        message_id: format!("lim-{day}"),
+        sender_id: "sender-1".to_string(),
+        sender_nickname: "합성A".to_string(),
+        timestamp: chrono::DateTime::parse_from_rfc3339(&format!("2026-02-{day:02}T09:00:00Z"))
+            .expect("timestamp")
+            .with_timezone(&chrono::Utc),
+        text: format!("예정된 일정 항목 {day}"),
+        message_type: "text".to_string(),
+        reply_to_message_id: None,
+    };
+    let messages = (1..=12).map(message).collect::<Vec<_>>();
+    archive.sync_messages(&messages).expect("sync messages");
+    rebuild_chunks(&archive).expect("rebuild chunks");
+    assert_eq!(archive.all_chunks().expect("chunks").len(), 12);
+
+    let hits = keyword_search(&archive, "일정", 3).expect("keyword search");
+
+    let snippets = hits
+        .iter()
+        .map(|hit| hit.snippet.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(hits.len(), 3);
+    assert!(
+        snippets.iter().any(|snippet| snippet.contains("항목 12")),
+        "the limit must keep the newest matches, got {snippets:?}"
+    );
+    assert!(
+        !snippets.iter().any(|snippet| snippet.ends_with("항목 1")),
+        "the oldest match must not survive the limit, got {snippets:?}"
+    );
+}
+
+#[test]
 fn keyword_search_treats_percent_and_underscore_as_literal_text() {
     let dir = tempfile::tempdir().expect("tempdir");
     let archive = Archive::open(&dir.path().join("archive.sqlite3")).expect("open archive");
