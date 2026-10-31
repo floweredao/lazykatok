@@ -1,0 +1,38 @@
+# Example lazykatok configuration. Every value shown is the built-in default,
+# so this file changes nothing until you edit it.
+#
+#   lazykatok --config examples/katok.toml sync --source macos
+#
+# Unknown keys are rejected, so a typo fails loudly instead of being ignored.
+
+# Source used when a command is run without --source: "fixture" reads a JSONL
+# file given on the command line, "macos" reads the local KakaoTalk app data.
+source_adapter = "fixture"
+
+# A gap longer than this (seconds) between two messages starts a new chunk.
+chunk_gap_group_seconds = 600    # group chats
+chunk_gap_direct_seconds = 1800  # one-to-one chats
+
+# Vector index directory. A relative path is taken inside the data directory.
+semantic_dir = "semantic"
+
+# Embedder: "local" (fastembed, downloads the model on the first index),
+# "mock" / "local-test" (deterministic, no network), or "openai-compatible" /
+# "http" for an OpenAI-compatible server set with embedder_url.
+embedder_provider = "local"
+embedder_model = "embeddinggemma-300m-q4"
+vector_dimension = 768
+embedding_batch_size = 64
+
+# Characters of message text shown around a search hit.
+snippet_length = 80
+
+# OpenAI-compatible endpoint (optional). Setting a URL sends indexed text and
+# search queries to that server.
+# embedder_url = "http://127.0.0.1:8080/v1"
+# Name of the environment variable that holds the bearer token. The token
+# itself is never read from this file.
+# embedder_api_key_env = "MY_EMBEDDING_TOKEN"
+# Text prepended before embedding, for models that expect task prefixes.
+# query_prefix = "query: "
+# passage_prefix = "passage: "
