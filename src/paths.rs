@@ -45,6 +45,19 @@ fn lexically_normal(path: &Path) -> PathBuf {
     normal
 }
 
+/// Prepare a directory named by the caller for output that holds message bodies.
+///
+/// A directory this has to create is owner-only, like [`ensure_private_dir`]. One that already
+/// exists keeps the permissions it came with: it belongs to whoever made it, and tightening it
+/// would change how every other user and process sees a path lazykatok was only asked to write
+/// into. What protects the content there is the file mode, which every writer sets to 0600.
+pub fn ensure_output_dir(path: &Path) -> Result<()> {
+    if path.is_dir() {
+        return Ok(());
+    }
+    ensure_private_dir(path)
+}
+
 pub fn ensure_private_dir(path: &std::path::Path) -> Result<()> {
     std::fs::create_dir_all(path).map_err(Error::Io)?;
     #[cfg(unix)]
@@ -59,8 +72,34 @@ pub fn ensure_private_dir(path: &std::path::Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_semantic_dir;
+    use super::{ensure_output_dir, resolve_semantic_dir};
     use std::path::Path;
+
+    #[cfg(unix)]
+    #[test]
+    fn an_output_dir_is_created_owner_only_and_an_existing_one_is_left_alone() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let mode = |path: &Path| {
+            std::fs::metadata(path)
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o777
+        };
+
+        let created = root.path().join("created");
+        ensure_output_dir(&created).expect("create output dir");
+        assert_eq!(mode(&created), 0o700);
+
+        let existing = root.path().join("existing");
+        std::fs::create_dir(&existing).expect("create dir");
+        std::fs::set_permissions(&existing, std::fs::Permissions::from_mode(0o755))
+            .expect("set mode");
+        ensure_output_dir(&existing).expect("accept existing output dir");
+        assert_eq!(mode(&existing), 0o755);
+    }
 
     #[test]
     fn a_relative_semantic_dir_resolves_inside_the_data_dir() {

@@ -107,7 +107,7 @@ fn run_get(
             tier_counts: BTreeMap::new(),
         }
     } else {
-        lazykatok::paths::ensure_private_dir(&output_dir)
+        lazykatok::paths::ensure_output_dir(&output_dir)
             .context("create private media output dir")?;
         let media_dirs = MediaDirs::discover(&home).context("scan KakaoTalk media cache dirs")?;
         let options = MediaResolveOptions {
@@ -192,7 +192,7 @@ fn run_backfill(
             ..MediaResolveOptions::new(output_dir.clone())
         };
         if !dry_run {
-            lazykatok::paths::ensure_private_dir(&output_dir)
+            lazykatok::paths::ensure_output_dir(&output_dir)
                 .context("create private media output dir")?;
         }
         let report = lazykatok::kakao::media_resolver::resolve_media_frames(
