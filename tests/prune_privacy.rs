@@ -21,7 +21,11 @@ fn lazykatok(data_dir: &Path, args: &[&str]) -> serde_json::Value {
         .args(args)
         .output()
         .expect("run lazykatok");
-    assert!(output.status.success(), "{args:?} failed: {}", String::from_utf8_lossy(&output.stdout));
+    assert!(
+        output.status.success(),
+        "{args:?} failed: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
     serde_json::from_slice(&output.stdout).expect("json output")
 }
 
@@ -38,7 +42,12 @@ fn files_holding(root: &Path, needle: &[u8]) -> Vec<String> {
                 .windows(needle.len())
                 .any(|window| window == needle)
             {
-                hits.push(path.strip_prefix(root).expect("relative").display().to_string());
+                hits.push(
+                    path.strip_prefix(root)
+                        .expect("relative")
+                        .display()
+                        .to_string(),
+                );
             }
         }
     }
@@ -86,7 +95,14 @@ fn prune_deleted_leaves_no_copy_of_the_removed_text_under_the_data_dir() {
 
     let report = lazykatok(
         &data_dir,
-        &["sync", "--source", "fixture", &pruned, "--prune-deleted", "--json"],
+        &[
+            "sync",
+            "--source",
+            "fixture",
+            &pruned,
+            "--prune-deleted",
+            "--json",
+        ],
     );
 
     assert_eq!(report["pruned_messages"].as_array().map(Vec::len), Some(1));
@@ -105,12 +121,26 @@ fn prune_preview_and_a_prune_that_removes_nothing_keep_the_semantic_index() {
 
     let preview = lazykatok(
         &data_dir,
-        &["sync", "--source", "fixture", &pruned, "--prune-preview", "--json"],
+        &[
+            "sync",
+            "--source",
+            "fixture",
+            &pruned,
+            "--prune-preview",
+            "--json",
+        ],
     );
     assert_eq!(preview["semantic_index_removed"], serde_json::json!(false));
     let nothing = lazykatok(
         &data_dir,
-        &["sync", "--source", "fixture", &full, "--prune-deleted", "--json"],
+        &[
+            "sync",
+            "--source",
+            "fixture",
+            &full,
+            "--prune-deleted",
+            "--json",
+        ],
     );
     assert_eq!(nothing["semantic_index_removed"], serde_json::json!(false));
 
