@@ -24,7 +24,7 @@ fn main() {
                     "error": {
                         "code": code,
                         "message": error.to_string(),
-                        "cause": format!("{error:#}")
+                        "cause": cause_chain(&error)
                     }
                 }))
                 .unwrap_or_else(|_| {
@@ -32,7 +32,7 @@ fn main() {
                 })
             );
         } else {
-            eprintln!("Error: {error:#}");
+            eprintln!("Error: {}", cause_chain(&error));
         }
         std::process::exit(1);
     }
@@ -66,6 +66,26 @@ fn run(cli: Cli) -> Result<()> {
         resolve_semantic_dir(&data_dir, &config.semantic_dir).context("resolve semantic dir")?;
 
     commands::run(cli.command, config, data_dir, archive_path, semantic_dir)
+}
+
+/// The error and its sources joined with `: `, like `{error:#}`, except that a source whose
+/// text its parent already ends with is not repeated. Several error variants interpolate their
+/// source into their own message, so the plain alternate format named it twice.
+fn cause_chain(error: &anyhow::Error) -> String {
+    let mut rendered = String::new();
+    let mut previous = String::new();
+    for link in error.chain() {
+        let text = link.to_string();
+        if !previous.is_empty() && previous.ends_with(&text) {
+            continue;
+        }
+        if !rendered.is_empty() {
+            rendered.push_str(": ");
+        }
+        rendered.push_str(&text);
+        previous = text;
+    }
+    rendered
 }
 
 fn error_code(error: &anyhow::Error) -> &'static str {

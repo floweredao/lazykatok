@@ -1137,3 +1137,44 @@ fn cli_prune_reports_the_same_list_in_the_same_order_on_every_run() {
         "a second prune has nothing left: {again:?}"
     );
 }
+
+/// A source error that is also interpolated into its parent's message must appear once in the
+/// `cause` chain, both in `--json` output and on stderr.
+#[test]
+fn cli_error_cause_names_each_underlying_error_once() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data_dir = dir.path().join("data");
+    let fixture = fixture_path("malformed.jsonl");
+    let once = |text: &str, what: &str| {
+        let detail = text.rsplit(": ").next().expect("last link").to_string();
+        assert_eq!(
+            text.matches(detail.as_str()).count(),
+            1,
+            "{what} repeats {detail:?}: {text}"
+        );
+    };
+
+    let json = Command::cargo_bin("lazykatok")
+        .expect("binary")
+        .arg("--data-dir")
+        .arg(&data_dir)
+        .args(["sync", "--source", "fixture", &fixture, "--json"])
+        .output()
+        .expect("run sync");
+    let json: serde_json::Value = serde_json::from_slice(&json.stdout).expect("json error");
+    let cause = json["error"]["cause"].as_str().expect("cause");
+    assert!(cause.contains("fixture parse error on line"), "{cause}");
+    once(cause, "json cause");
+
+    let plain = Command::cargo_bin("lazykatok")
+        .expect("binary")
+        .arg("--data-dir")
+        .arg(&data_dir)
+        .args(["transcript", "--chat", "chat-x", "--since", "not-a-time"])
+        .output()
+        .expect("run transcript");
+    let stderr = String::from_utf8_lossy(&plain.stderr);
+    let stderr = stderr.trim();
+    assert!(stderr.contains("timestamp parse error"), "{stderr}");
+    once(stderr, "stderr");
+}
