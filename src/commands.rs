@@ -552,7 +552,8 @@ impl Drop for ReplyTerminal {
 
 pub(crate) fn command_requests_json(command: &Commands) -> bool {
     match command {
-        Commands::Doctor { json, .. }
+        Commands::Accounts { json }
+        | Commands::Doctor { json, .. }
         | Commands::Sync { json, .. }
         | Commands::Index { json, .. }
         | Commands::WipeIndex { json, .. }
@@ -598,6 +599,7 @@ pub(crate) fn run(
     semantic_dir: PathBuf,
 ) -> Result<()> {
     match command {
+        Commands::Accounts { json } => run_accounts(json, &data_dir),
         Commands::Doctor { macos_probe, json } => run_doctor(
             macos_probe,
             json,
@@ -1933,6 +1935,26 @@ fn run_send(
             "chars": chars
         }),
     )
+}
+
+fn run_accounts(json: bool, data_dir: &Path) -> Result<()> {
+    let home = lazykatok::kakao::default_home().context("resolve home directory")?;
+    let options = lazykatok::kakao::AuthOptions::new(home, data_dir.to_path_buf());
+    let accounts =
+        lazykatok::kakao::accounts::list_accounts(&options).context("list KakaoTalk accounts")?;
+    if json {
+        return print_payload(
+            true,
+            &serde_json::json!({ "ok": true, "accounts": accounts }),
+        );
+    }
+    if accounts.is_empty() {
+        println!("no KakaoTalk account opens a database on this Mac");
+    }
+    for account in &accounts {
+        println!("{}", crate::account::describe(account));
+    }
+    Ok(())
 }
 
 fn run_permissions(command: PermissionsCommand) -> Result<()> {

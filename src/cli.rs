@@ -11,12 +11,27 @@ pub(crate) struct Cli {
     pub(crate) data_dir: Option<PathBuf>,
     #[arg(long)]
     pub(crate) config: Option<PathBuf>,
+    /// Read this KakaoTalk account: a user id from `lazykatok accounts`, or `latest` for the one
+    /// whose databases were written most recently (the account KakaoTalk is using).
+    ///
+    /// Each account keeps its own archive. The account already pinned in the data dir keeps it;
+    /// any other reads into `<data-dir>/accounts/<user-id>`.
+    #[arg(long, value_name = "USER_ID|latest")]
+    pub(crate) account: Option<lazykatok::kakao::accounts::AccountChoice>,
     #[command(subcommand)]
     pub(crate) command: Commands,
 }
 
 #[derive(Subcommand)]
 pub(crate) enum Commands {
+    /// List the KakaoTalk accounts whose databases open on this Mac.
+    ///
+    /// The most recently written account comes first. Pass a listed user id to `--account`
+    /// to read that account.
+    Accounts {
+        #[arg(long)]
+        json: bool,
+    },
     Doctor {
         #[arg(long)]
         macos_probe: bool,
