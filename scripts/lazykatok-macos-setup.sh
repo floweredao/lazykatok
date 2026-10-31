@@ -2,10 +2,14 @@
 set -euo pipefail
 
 LAZYKATOK_BIN="${LAZYKATOK_BIN:-lazykatok}"
+# Resolve the clone from the script's own location, not the caller's working directory.
+CLONE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 if ! command -v "$LAZYKATOK_BIN" >/dev/null 2>&1; then
-  if [ -x "target/debug/lazykatok" ]; then
-    LAZYKATOK_BIN="target/debug/lazykatok"
+  if [ -x "$CLONE_ROOT/target/release/lazykatok" ]; then
+    LAZYKATOK_BIN="$CLONE_ROOT/target/release/lazykatok"
+  elif [ -x "$CLONE_ROOT/target/debug/lazykatok" ]; then
+    LAZYKATOK_BIN="$CLONE_ROOT/target/debug/lazykatok"
   else
     echo "lazykatok binary not found. Run cargo install --git https://github.com/changeroa/lazykatok, or set LAZYKATOK_BIN=/path/to/lazykatok." >&2
     exit 127
