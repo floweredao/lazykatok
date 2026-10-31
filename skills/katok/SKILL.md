@@ -41,7 +41,7 @@ lazykatok chunk context <chunk-id> --json
 lazykatok chunk parent <chunk-id> --json
 lazykatok chunks --chat <chat-id> --json      # every chunk in one room (metadata only)
 lazykatok transcript --chat <chat-id> --json                      # exports one room to Markdown
-lazykatok transcript --chat <chat-id> --since 2026-07-20 --json   # only messages at or after a time
+lazykatok transcript --chat <chat-id> --since 2026-07-20T00:00:00+09:00 --json   # messages at or after an RFC3339 time
 lazykatok transcript --chat <chat-id> --out <dir> --json          # writes outside the data dir
 lazykatok media get --chat <chat-id> --out <dir> --json   # photos, albums, videos, files, and emoticons
 lazykatok media get --chat <chat-id> --kind file --json   # only file attachments (zip, pdf, xlsx, ...)
