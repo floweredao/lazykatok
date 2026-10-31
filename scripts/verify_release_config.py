@@ -175,10 +175,15 @@ def main() -> int:
         ),
         check(
             "homebrew-https-url",
-            "git@github.com:changeroa/lazykatok.git" not in "\n".join(
-                [readme, formula, release, setup_script],
+            not any(
+                ssh_url in text
+                for ssh_url in (
+                    "git@github.com:changeroa/lazykatok.git",
+                    "git@github.com:floweredao/lazykatok.git",
+                )
+                for text in (readme, formula, release, setup_script)
             )
-            and "https://github.com/changeroa/lazykatok.git" in readme
+            and "https://github.com/floweredao/lazykatok.git" in readme
             and 'url "https://github.com/changeroa/lazykatok.git"' in formula
             and 'url "https://github.com/changeroa/lazykatok.git"' in release,
             "Homebrew installation docs and formula URLs use HTTPS instead of SSH",
