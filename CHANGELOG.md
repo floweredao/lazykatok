@@ -22,6 +22,11 @@
 
 ### Send
 
+- A send that has to open a room now works when KakaoTalk is running with
+  every window closed, the state it starts in at login. It used to fail every
+  time with "KakaoTalk was not frontmost", because a windowless KakaoTalk never
+  reports itself frontmost. The main window is now reopened first, behind the
+  same idle wait and focus restore as the rest of the step.
 - A send no longer reports a failure for a message KakaoTalk already took. The
   compose box is polled for a second after each key, and a box emptied just
   after that poll gave up is this send's own delivery arriving late, not a
