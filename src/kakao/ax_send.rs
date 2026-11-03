@@ -72,6 +72,8 @@ const OS_NO_ERR: OSStatus = 0;
 const KEY_RETURN: u16 = 36;
 const KEY_V: u16 = 9;
 
+const KAKAOTALK_BUNDLE_ID: &str = "com.kakao.KakaoTalkMac";
+
 const ATTR_WINDOWS: &str = "AXWindows";
 const ATTR_CHILDREN: &str = "AXChildren";
 const ATTR_TITLE: &str = "AXTitle";
@@ -510,6 +512,7 @@ fn take_screen(pid: i32, ctx: &SendContext, subtitle: &str) -> Result<ScreenHold
         _focus: FocusRestore::capture(pid),
         curtain: ctx.curtain.clone(),
     };
+    reopen_if_windowless(pid)?;
     if !raise_and_confirm(pid) {
         return Err(SendError::FocusLost);
     }
@@ -632,6 +635,36 @@ impl Drop for FocusRestore {
             activate(pid);
         }
     }
+}
+
+/// Give a KakaoTalk with every window closed its main window back.
+///
+/// That is the state it starts in at login, and in it the app can be activated
+/// but never reports itself frontmost, so every raise fails as `FocusLost`. A
+/// reopen event restores the main window, as clicking the Dock icon does;
+/// `open -b` sends one to a running app without needing the Apple Events
+/// permission that `tell application "KakaoTalk" to reopen` does. It brings
+/// KakaoTalk forward, so it runs only inside [`take_screen`], behind the idle
+/// wait and the focus restore.
+fn reopen_if_windowless(pid: i32) -> Result<(), SendError> {
+    let app = AxRef(unsafe { AXUIElementCreateApplication(pid) });
+    let has_window = || !child_elements(app.as_raw(), ATTR_WINDOWS).is_empty();
+    if has_window() {
+        return Ok(());
+    }
+    let status = Command::new("open")
+        .args(["-g", "-b", KAKAOTALK_BUNDLE_ID])
+        .status();
+    if !status.is_ok_and(|s| s.success()) {
+        return Err(SendError::NoWindow);
+    }
+    for _ in 0..30 {
+        if has_window() {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Err(SendError::NoWindow)
 }
 
 /// Bring `pid` forward and confirm it actually got there.
@@ -766,6 +799,11 @@ pub enum SendError {
          Nothing was sent; retry."
     )]
     FocusLost,
+    #[error(
+        "KakaoTalk has no open window and did not open one when asked, so it cannot be \
+         brought forward. Nothing was sent; click its Dock icon and retry."
+    )]
+    NoWindow,
     #[error(
         "the chat list reordered while '{room}' was being opened, so the click was not sent — \
          it would have landed on whichever room took that position. Nothing was opened; retry."
@@ -1887,6 +1925,13 @@ fn resolve_window(
     // every attempt, not grabbed and released per attempt, which both tripled
     // the wall clock and yanked focus away while the window was still coming up.
     let hold = take_screen(pid, ctx, &format!("{} 채팅방 여는 중", target.name))?;
+    // Taking the screen may have reopened a windowless KakaoTalk, so the list read
+    // above can be stale: the chat list the strategies below drive may only exist now.
+    let (windows, hits) = find();
+    if let [i] = hits[..] {
+        drop(hold);
+        return Ok(AxRef::retained(windows[i].as_raw()));
+    }
 
     // Each strategy is tried more than once. Driving another app's list is
     // inherently racy — it reorders under us, a row can be mid-render, the click
