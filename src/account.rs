@@ -17,6 +17,18 @@ fn options(base: &Path) -> Result<AuthOptions> {
     Ok(AuthOptions::new(home, base.to_path_buf()))
 }
 
+/// Whether `command` never opens a KakaoTalk database. Only such a command may take a pinned
+/// data dir without verifying the account's key: a reader handed a pin that no longer verifies
+/// falls back to whichever account does, and would read it into this account's archive.
+fn skips_kakao_database(command: &Commands) -> bool {
+    #[cfg(all(target_os = "macos", feature = "private-send"))]
+    if matches!(command, Commands::Send { .. }) {
+        return true;
+    }
+    let _ = command;
+    false
+}
+
 /// The account a run reads: its user id and the data dir that holds its archive.
 pub(crate) struct Selected {
     pub(crate) user_id: i64,
@@ -32,15 +44,27 @@ impl From<Account> for Selected {
     }
 }
 
-/// `--account`. A user id katok has already read into a data dir is taken from that dir's pin;
-/// anything else lists the accounts, which verifies every key.
-pub(crate) fn resolve(base: &Path, choice: &AccountChoice) -> Result<Selected> {
+/// `--account`. For `send`, which reads only katok's own archive, a user id katok has already
+/// read into a data dir is taken from that dir's pin. Everything else lists the accounts, which
+/// verifies every key.
+pub(crate) fn resolve(base: &Path, choice: &AccountChoice, command: &Commands) -> Result<Selected> {
+    resolve_with(base, choice, command, || options(base))
+}
+
+fn resolve_with(
+    base: &Path,
+    choice: &AccountChoice,
+    command: &Commands,
+    options: impl FnOnce() -> Result<AuthOptions>,
+) -> Result<Selected> {
     if let AccountChoice::UserId(user_id) = *choice {
-        if let Some(data_dir) = pinned_account_data_dir(base, user_id) {
-            return Ok(Selected { user_id, data_dir });
+        if skips_kakao_database(command) {
+            if let Some(data_dir) = pinned_account_data_dir(base, user_id) {
+                return Ok(Selected { user_id, data_dir });
+            }
         }
     }
-    let accounts = list_accounts(&options(base)?).context("list KakaoTalk accounts")?;
+    let accounts = list_accounts(&options()?).context("list KakaoTalk accounts")?;
     Ok(choose_account(&accounts, choice)?.into())
 }
 
@@ -122,7 +146,68 @@ fn resolve_account_selection(input: &str, accounts: &[Account]) -> Result<Accoun
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::Cli;
+    use clap::Parser;
     use std::path::PathBuf;
+
+    fn command(args: &[&str]) -> Commands {
+        let mut argv = vec!["lazykatok"];
+        argv.extend(args);
+        Cli::try_parse_from(argv).expect("parse").command
+    }
+
+    /// A base dir pinned to `user_id`, and a home with no KakaoTalk database at all, so a
+    /// listing can only fail.
+    fn pinned_base(user_id: i64) -> (tempfile::TempDir, tempfile::TempDir) {
+        let base = tempfile::tempdir().expect("base");
+        std::fs::create_dir_all(base.path().join("kakao")).expect("mkdir");
+        std::fs::write(
+            base.path().join("kakao").join("auth.json"),
+            format!(r#"{{"user_id": {user_id}, "uuid": "00000000-0000-0000-0000-000000000000"}}"#),
+        )
+        .expect("pin");
+        (base, tempfile::tempdir().expect("home"))
+    }
+
+    fn resolve_in(
+        base: &Path,
+        home: &Path,
+        choice: AccountChoice,
+        command: &Commands,
+    ) -> Result<Selected> {
+        resolve_with(base, &choice, command, || {
+            Ok(AuthOptions::new(home.to_path_buf(), base.to_path_buf()))
+        })
+    }
+
+    #[cfg(all(target_os = "macos", feature = "private-send"))]
+    #[test]
+    fn send_takes_the_pinned_dir_without_listing_accounts() {
+        let (base, home) = pinned_base(1001);
+        let send = command(&["send", "--chat", "1", "--dry-run"]);
+        let selected = resolve_in(base.path(), home.path(), AccountChoice::UserId(1001), &send)
+            .expect("no database is needed for a pinned send");
+        assert_eq!(selected.user_id, 1001);
+        assert_eq!(selected.data_dir, base.path());
+
+        // An id nothing is pinned to still has to be verified, and there is nothing to verify.
+        assert!(resolve_in(base.path(), home.path(), AccountChoice::UserId(2002), &send).is_err());
+        assert!(resolve_in(base.path(), home.path(), AccountChoice::Latest, &send).is_err());
+    }
+
+    #[test]
+    fn a_command_that_reads_kakaotalk_always_verifies_the_account() {
+        let (base, home) = pinned_base(1001);
+        let reader = command(&["accounts"]);
+        // Pinned, but the key opens nothing: the reader is refused rather than handed the dir.
+        assert!(resolve_in(
+            base.path(),
+            home.path(),
+            AccountChoice::UserId(1001),
+            &reader
+        )
+        .is_err());
+    }
 
     fn account(user_id: i64, latest: bool) -> Account {
         Account {

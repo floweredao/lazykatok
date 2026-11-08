@@ -47,7 +47,7 @@ fn run(cli: Cli) -> Result<()> {
         None => default_data_dir().context("resolve default data directory")?,
     };
     let account = match cli.account {
-        Some(choice) => Some(account::resolve(&base_data_dir, &choice)?),
+        Some(choice) => Some(account::resolve(&base_data_dir, &choice, &cli.command)?),
         None if account::wants_prompt(&cli.command, &config) => account::prompt(&base_data_dir)?,
         None => None,
     };
