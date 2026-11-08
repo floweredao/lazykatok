@@ -22,6 +22,10 @@
 
 ### Send
 
+- `send --text` takes a message that starts with "-" (`--text "-5 min"`)
+  without the `--text=` spelling. A body that is only a long flag, such as
+  `--json`, is refused rather than sent, since that is a forgotten value
+  swallowing the next flag; pipe it on stdin to send it literally.
 - A send that has to open a room now works when KakaoTalk is running with
   every window closed, the state it starts in at login. It used to fail every
   time with "KakaoTalk was not frontmost", because a windowless KakaoTalk never
