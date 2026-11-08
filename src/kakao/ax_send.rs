@@ -1446,22 +1446,25 @@ impl Delivery {
     }
 }
 
-/// Non-empty transcript rows, newest first, that a delivery check reads. A sent message lands
-/// in the newest row; the second tolerates one arriving in the same moment. Every row costs
-/// several AX round trips, so this stays small.
-const CONFIRM_TAIL_ROWS: usize = 2;
-/// Rows read from the end while looking for those, because the newest rows can be empty
-/// spacers. Bounds the AX reads: the history above is never touched.
+/// Newest transcript rows a delivery check reads. A row costs several AX round trips, so the
+/// check never reaches into the history above these.
 const CONFIRM_SCAN_ROWS: usize = 8;
-const CONFIRM_POLLS: u32 = 30;
+/// How long a delivered message may take to appear in the transcript, wall clock. A deadline
+/// rather than a poll count, because one poll is several AX round trips and those are slow on a
+/// loaded Mac.
+const CONFIRM_BUDGET: Duration = Duration::from_secs(3);
 const CONFIRM_INTERVAL: Duration = Duration::from_millis(100);
+/// A transcript value at least this long that the message starts with is the message shown
+/// collapsed, as KakaoTalk shows long messages behind a "show all" link.
+const COLLAPSED_MESSAGE_CHARS: usize = 100;
 
-/// How many of the room's newest transcript rows show `text`. `None` when the transcript, or
-/// any text in its newest rows, cannot be read.
-///
-/// A message row is `AXRow > AXCell > [sender, time, ..., AXTextArea]`; every child's value is
-/// compared, since a name or a time never equals a whole message.
-fn transcript_shows(window: AXUIElementRef, text: &str) -> Option<usize> {
+/// Where the room's transcript ended before a send: its row count and its newest row.
+struct TranscriptMark {
+    rows: usize,
+    last: Option<AxRef>,
+}
+
+fn transcript_rows(window: AXUIElementRef) -> Option<Vec<AxRef>> {
     let table = child_elements(window, ATTR_CHILDREN)
         .into_iter()
         .filter(|c| role_of(c.as_raw()) == ROLE_SCROLL_AREA)
@@ -1470,74 +1473,118 @@ fn transcript_shows(window: AXUIElementRef, text: &str) -> Option<usize> {
                 .into_iter()
                 .find(|c| role_of(c.as_raw()) == ROLE_TABLE)
         })?;
-    let rows = child_elements(table.as_raw(), ATTR_ROWS);
-    // Lazy, so reading stops at the last row the count needs.
-    let tail: Vec<Vec<String>> = rows
-        .iter()
-        .rev()
-        .take(CONFIRM_SCAN_ROWS)
-        .map(|row| {
-            child_elements(row.as_raw(), ATTR_CHILDREN)
-                .iter()
-                .flat_map(|cell| child_elements(cell.as_raw(), ATTR_CHILDREN))
-                .filter_map(|el| attr_string(el.as_raw(), ATTR_VALUE))
-                .collect::<Vec<String>>()
-        })
-        .filter(|values| !values.is_empty())
-        .take(CONFIRM_TAIL_ROWS)
-        .collect();
-    rows_showing(&tail, text)
+    Some(child_elements(table.as_raw(), ATTR_ROWS))
 }
 
-/// Count the first `CONFIRM_TAIL_ROWS` non-empty rows of `tail` (newest first) holding a value
-/// that shows `text`. `None` when no row holds any value: nothing was readable.
-fn rows_showing(tail: &[Vec<String>], text: &str) -> Option<usize> {
-    let rows: Vec<&Vec<String>> = tail
-        .iter()
-        .filter(|values| !values.is_empty())
-        .take(CONFIRM_TAIL_ROWS)
-        .collect();
-    if rows.is_empty() {
-        return None;
+fn transcript_mark(window: AXUIElementRef) -> Option<TranscriptMark> {
+    let rows = transcript_rows(window)?;
+    Some(TranscriptMark {
+        rows: rows.len(),
+        last: rows.into_iter().last(),
+    })
+}
+
+/// Whether a row added since `mark` shows `text`. `None` when the transcript cannot be read.
+///
+/// A message row is `AXRow > AXCell > [sender, time, ..., AXTextArea]`; every child's value is
+/// compared, since a name or a time never equals a whole message.
+fn transcript_shows_since(
+    window: AXUIElementRef,
+    mark: &TranscriptMark,
+    text: &str,
+) -> Option<bool> {
+    let rows = transcript_rows(window)?;
+    let new = rows_since(
+        mark.rows,
+        mark.last.as_ref(),
+        &rows,
+        |a, b| same_element(a.as_raw(), b.as_raw()),
+        CONFIRM_SCAN_ROWS,
+    );
+    Some(new.iter().rev().any(|row| {
+        child_elements(row.as_raw(), ATTR_CHILDREN)
+            .iter()
+            .flat_map(|cell| child_elements(cell.as_raw(), ATTR_CHILDREN))
+            .filter_map(|el| attr_string(el.as_raw(), ATTR_VALUE))
+            .any(|value| shows_message(&value, text))
+    }))
+}
+
+/// The rows of `rows` added after a mark of `mark_rows` rows whose newest was `mark_last`,
+/// looking at no more than the newest `scan`.
+///
+/// The old newest row is found by identity, so rows arriving after ours, or old rows trimmed
+/// from the top, do not shift what counts as new. When it is no longer among the scanned rows,
+/// the rows past the old count are new. An earlier message equal to this one is never new.
+fn rows_since<'a, T>(
+    mark_rows: usize,
+    mark_last: Option<&T>,
+    rows: &'a [T],
+    same: impl Fn(&T, &T) -> bool,
+    scan: usize,
+) -> &'a [T] {
+    let floor = rows.len().saturating_sub(scan);
+    if let Some(last) = mark_last {
+        if let Some(i) = (floor..rows.len()).rev().find(|&i| same(&rows[i], last)) {
+            return &rows[i + 1..];
+        }
     }
-    Some(
-        rows.iter()
-            .filter(|values| values.iter().any(|value| shows_message(value, text)))
-            .count(),
-    )
+    if rows.len() > mark_rows {
+        return &rows[mark_rows.max(floor)..];
+    }
+    &[]
 }
 
-/// Whether a transcript value is `text` as sent, allowing for surrounding whitespace and
-/// line-ending differences.
+/// Whether a transcript value is `text` as sent, allowing for surrounding whitespace, line
+/// endings, and a long message shown collapsed.
 fn shows_message(value: &str, text: &str) -> bool {
     let normalize = |s: &str| s.replace("\r\n", "\n").trim().to_string();
-    let value = normalize(value);
-    !value.is_empty() && value == normalize(text)
+    let (value, text) = (normalize(value), normalize(text));
+    if value.is_empty() {
+        return false;
+    }
+    if value == text {
+        return true;
+    }
+    let shown = value.trim_end_matches(['\u{2026}', '.']).trim_end();
+    shown.chars().count() >= COLLAPSED_MESSAGE_CHARS && text.starts_with(shown)
 }
 
 /// Turn an accepted send into a confirmed one.
 ///
-/// `before` is how many of the newest rows showed the message before it was written; a
-/// delivery adds one. With no readable transcript the emptied compose box is the only evidence,
-/// and the result says so. A readable transcript that never shows it is an error: the box
-/// emptied, so the message may well be in the room, but nothing confirmed it.
+/// `marked` says whether the transcript was readable before the send; `shows` reports whether
+/// a row added since shows the message, or `None` when the transcript cannot be read. With no
+/// readable transcript the emptied compose box is the only evidence, and the result says so.
+/// A transcript that stays readable and never shows it is an error: the box emptied, so the
+/// message may well be in the room, but nothing confirmed it.
 fn confirm_delivery(
     room: &str,
-    before: Option<usize>,
-    mut shown_now: impl FnMut() -> Option<usize>,
-    polls: u32,
+    marked: bool,
+    mut shows: impl FnMut() -> Option<bool>,
+    budget: Duration,
     interval: Duration,
 ) -> Result<Delivery, SendError> {
-    let Some(before) = before else {
+    if !marked {
         return Ok(Delivery::ComposeDrained);
-    };
-    for _ in 0..polls {
-        if shown_now().is_some_and(|now| now > before) {
-            return Ok(Delivery::Transcript);
+    }
+    let deadline = Instant::now() + budget;
+    let mut readable = false;
+    loop {
+        match shows() {
+            Some(true) => return Ok(Delivery::Transcript),
+            Some(false) => readable = true,
+            None => {}
+        }
+        if Instant::now() >= deadline {
+            break;
         }
         std::thread::sleep(interval);
     }
-    Err(SendError::DeliveryUnconfirmed(room.to_string()))
+    if readable {
+        Err(SendError::DeliveryUnconfirmed(room.to_string()))
+    } else {
+        Ok(Delivery::ComposeDrained)
+    }
 }
 
 fn open_titles(windows: &[AxRef]) -> String {
@@ -2164,25 +2211,28 @@ pub fn send_to_open_window(
     let compose = compose_box(window.as_raw())
         .ok_or_else(|| SendError::ComposeBoxNotFound(target.name.clone()))?;
 
-    // Read before anything is written: the room's latest messages as they stand are the baseline
-    // a delivered message has to add to.
-    let shown_before = transcript_shows(window.as_raw(), text);
-    let confirm = || {
-        confirm_delivery(
-            &target.name,
-            shown_before,
-            || transcript_shows(window.as_raw(), text),
-            CONFIRM_POLLS,
-            CONFIRM_INTERVAL,
-        )
-    };
-
     // Strict mode must never replace a person's draft. This read sits immediately before the
     // compose mutation; an unreadable value is not treated as empty.
     ctx.require_empty_background_compose(
         &target.name,
         attr_string(compose.as_raw(), ATTR_VALUE).as_deref(),
     )?;
+
+    // Where the transcript ends before anything is written: a delivered message is a row added
+    // after this point.
+    let mark = transcript_mark(window.as_raw());
+    let confirm = || {
+        confirm_delivery(
+            &target.name,
+            mark.is_some(),
+            || {
+                mark.as_ref()
+                    .and_then(|mark| transcript_shows_since(window.as_raw(), mark, text))
+            },
+            CONFIRM_BUDGET,
+            CONFIRM_INTERVAL,
+        )
+    };
 
     // Make the compose box the app's focused element before typing. Enter is delivered to
     // KakaoTalk as a whole, and KakaoTalk routes it to whatever it considers focused — with
@@ -2285,7 +2335,9 @@ pub fn send_to_open_window(
     // is worth it over leaving a message sitting unsent in the box — but only during a gap in
     // their input, and only if KakaoTalk verifiably comes forward. A global Enter fired while
     // the user is back in their own app would submit whatever they were in the middle of.
-    let _hold = take_screen(pid, ctx, &format!("{} 로 전송 중", target.name))?;
+    // Handed back before every confirmation below: confirming only reads the transcript, and
+    // the user's input must not stay blocked while it waits.
+    let hold = take_screen(pid, ctx, &format!("{} 로 전송 중", target.name))?;
     focus_window_element(window.as_raw(), compose.as_raw());
     std::thread::sleep(Duration::from_millis(200));
     // Checked inside front_then, immediately before the post: a focus change after the raise
@@ -2298,12 +2350,14 @@ pub fn send_to_open_window(
         Ok(Err(error)) | Err(error) => {
             // The raise and the focus write take a moment, and the box can drain inside it.
             if drained() {
+                drop(hold);
                 return confirm();
             }
             return Err(error);
         }
     }
     if accepted(30) {
+        drop(hold);
         return confirm();
     }
 
@@ -2313,9 +2367,11 @@ pub fn send_to_open_window(
     // cannot land in any other window — the same coordinate-safety argument the chat-list
     // double-click relies on.
     if drained() {
+        drop(hold);
         return confirm();
     }
     if click_send_button(window.as_raw(), pid, &on_target)? && accepted(30) {
+        drop(hold);
         return confirm();
     }
     Err(SendError::NotSent)
@@ -2827,45 +2883,92 @@ mod room_matching_tests {
 
 #[cfg(test)]
 mod delivery_tests {
-    use super::{confirm_delivery, rows_showing, Delivery, SendError};
+    use super::{confirm_delivery, rows_since, shows_message, Delivery, SendError};
     use std::cell::Cell;
     use std::time::Duration;
 
-    fn row(values: &[&str]) -> Vec<String> {
-        values.iter().map(|v| v.to_string()).collect()
+    /// Rows stand in for AX elements: an id, and the text the row shows.
+    type Row = (u32, &'static str);
+
+    fn new_texts(mark_rows: usize, mark_last: Option<u32>, rows: &[Row]) -> Vec<&'static str> {
+        let last = mark_last.and_then(|id| rows.iter().find(|r| r.0 == id).copied());
+        let last = last.or(mark_last.map(|id| (id, "")));
+        rows_since(mark_rows, last.as_ref(), rows, |a, b| a.0 == b.0, 8)
+            .iter()
+            .map(|r| r.1)
+            .collect()
     }
 
     #[test]
-    fn only_the_newest_non_empty_rows_are_counted() {
-        let tail = vec![
-            row(&[]),
-            row(&["10:01", "synthetic hello"]),
-            row(&["10:00", "older"]),
-            row(&["09:59", "synthetic hello"]),
-            row(&["09:58", "synthetic hello"]),
-        ];
-        // The spacer is skipped; of the next two rows one shows it; older rows are out of range.
-        assert_eq!(rows_showing(&tail, "synthetic hello"), Some(1));
-        assert_eq!(rows_showing(&tail, "  synthetic hello\n"), Some(1));
-        assert_eq!(rows_showing(&tail, "older"), Some(1));
-        assert_eq!(rows_showing(&tail, "synthetic"), Some(0));
-        assert_eq!(rows_showing(&[row(&[]), row(&[])], "x"), None);
+    fn an_earlier_identical_message_is_not_new() {
+        let rows = [(1, "ok"), (2, "ok"), (3, "ok")];
+        // Two equal replies already sat at the bottom; the third is the only new row.
+        assert_eq!(new_texts(2, Some(2), &rows), ["ok"]);
+        assert!(new_texts(3, Some(3), &rows).is_empty());
+    }
+
+    #[test]
+    fn a_reply_landing_after_ours_does_not_hide_it() {
+        let rows = [(1, "older"), (2, "synthetic hello"), (3, "their reply")];
+        assert_eq!(
+            new_texts(1, Some(1), &rows),
+            ["synthetic hello", "their reply"]
+        );
+    }
+
+    #[test]
+    fn rows_trimmed_from_the_top_do_not_shift_what_is_new() {
+        // The count stayed at three because the oldest row was dropped as ours arrived.
+        let rows = [(2, "b"), (3, "c"), (4, "synthetic hello")];
+        assert_eq!(new_texts(3, Some(3), &rows), ["synthetic hello"]);
+    }
+
+    #[test]
+    fn without_the_old_newest_row_the_count_decides_within_the_scan() {
+        let rows: Vec<Row> = (0..20).map(|i| (100 + i, "x")).collect();
+        assert_eq!(new_texts(18, Some(7), &rows).len(), 2);
+        // Never more than the scanned rows, however far the count moved.
+        assert_eq!(new_texts(1, None, &rows).len(), 8);
+        assert!(new_texts(20, None, &rows).is_empty());
+    }
+
+    #[test]
+    fn a_collapsed_long_message_still_matches() {
+        let long = "synthetic ".repeat(30);
+        let shown = format!("{}\u{2026}", &long[..150]);
+        assert!(shows_message(&shown, &long));
+        assert!(shows_message("  synthetic hello\r\n", "synthetic hello\n"));
+        // A short prefix is not taken for a collapsed message.
+        assert!(!shows_message("synthetic", "synthetic hello"));
     }
 
     #[test]
     fn a_new_row_showing_the_message_confirms_it() {
-        let polls = Cell::new(0);
-        let shown = || {
-            polls.set(polls.get() + 1);
-            Some(if polls.get() >= 3 { 2 } else { 1 })
+        let reads = Cell::new(0);
+        let shows = || {
+            reads.set(reads.get() + 1);
+            Some(reads.get() >= 3)
         };
-        let delivery = confirm_delivery("Synthetic Room", Some(1), shown, 10, Duration::ZERO);
+        let delivery = confirm_delivery(
+            "Synthetic Room",
+            true,
+            shows,
+            Duration::from_secs(60),
+            Duration::ZERO,
+        );
         assert_eq!(delivery.unwrap(), Delivery::Transcript);
+        assert_eq!(reads.get(), 3);
     }
 
     #[test]
-    fn an_earlier_identical_message_does_not_confirm_a_new_one() {
-        let result = confirm_delivery("Synthetic Room", Some(1), || Some(1), 5, Duration::ZERO);
+    fn a_readable_transcript_that_never_shows_it_is_unconfirmed() {
+        let result = confirm_delivery(
+            "Synthetic Room",
+            true,
+            || Some(false),
+            Duration::ZERO,
+            Duration::ZERO,
+        );
         assert!(matches!(
             result,
             Err(SendError::DeliveryUnconfirmed(room)) if room == "Synthetic Room"
@@ -2875,18 +2978,29 @@ mod delivery_tests {
     #[test]
     fn an_unreadable_transcript_falls_back_to_the_drained_box() {
         let reads = Cell::new(0);
-        let delivery = confirm_delivery(
+        let unread = || {
+            reads.set(reads.get() + 1);
+            None
+        };
+        // Unreadable before the send: nothing is polled.
+        let before = confirm_delivery(
             "Synthetic Room",
-            None,
-            || {
-                reads.set(reads.get() + 1);
-                None
-            },
-            5,
+            false,
+            unread,
+            Duration::ZERO,
             Duration::ZERO,
         );
-        assert_eq!(delivery.unwrap(), Delivery::ComposeDrained);
+        assert_eq!(before.unwrap(), Delivery::ComposeDrained);
         assert_eq!(reads.get(), 0);
+        // Readable before, unreadable after: the drained box is still the evidence.
+        let after = confirm_delivery(
+            "Synthetic Room",
+            true,
+            || None,
+            Duration::ZERO,
+            Duration::ZERO,
+        );
+        assert_eq!(after.unwrap(), Delivery::ComposeDrained);
     }
 }
 
