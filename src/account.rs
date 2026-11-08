@@ -1,11 +1,13 @@
 //! `--account` resolution and the account prompt shown before `watch --select`.
 
 use std::io::{self, BufRead, IsTerminal, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use lazykatok::config::KatokConfig;
-use lazykatok::kakao::accounts::{choose_account, list_accounts, Account, AccountChoice};
+use lazykatok::kakao::accounts::{
+    choose_account, list_accounts, pinned_account_data_dir, Account, AccountChoice,
+};
 use lazykatok::kakao::AuthOptions;
 
 use crate::cli::Commands;
@@ -15,9 +17,31 @@ fn options(base: &Path) -> Result<AuthOptions> {
     Ok(AuthOptions::new(home, base.to_path_buf()))
 }
 
-pub(crate) fn resolve(base: &Path, choice: &AccountChoice) -> Result<Account> {
+/// The account a run reads: its user id and the data dir that holds its archive.
+pub(crate) struct Selected {
+    pub(crate) user_id: i64,
+    pub(crate) data_dir: PathBuf,
+}
+
+impl From<Account> for Selected {
+    fn from(account: Account) -> Self {
+        Self {
+            user_id: account.user_id,
+            data_dir: account.data_dir,
+        }
+    }
+}
+
+/// `--account`. A user id katok has already read into a data dir is taken from that dir's pin;
+/// anything else lists the accounts, which verifies every key.
+pub(crate) fn resolve(base: &Path, choice: &AccountChoice) -> Result<Selected> {
+    if let AccountChoice::UserId(user_id) = *choice {
+        if let Some(data_dir) = pinned_account_data_dir(base, user_id) {
+            return Ok(Selected { user_id, data_dir });
+        }
+    }
     let accounts = list_accounts(&options(base)?).context("list KakaoTalk accounts")?;
-    Ok(choose_account(&accounts, choice)?)
+    Ok(choose_account(&accounts, choice)?.into())
 }
 
 /// `watch --select` on the macOS source, in a terminal: the one place a person picks a chat,
@@ -36,7 +60,7 @@ pub(crate) fn wants_prompt(command: &Commands, config: &KatokConfig) -> bool {
 }
 
 /// Ask which account to read when more than one opens. `None` when there is nothing to ask.
-pub(crate) fn prompt(base: &Path) -> Result<Option<Account>> {
+pub(crate) fn prompt(base: &Path) -> Result<Option<Selected>> {
     let accounts = list_accounts(&options(base)?).context("list KakaoTalk accounts")?;
     if accounts.len() < 2 {
         return Ok(None);
@@ -49,7 +73,7 @@ pub(crate) fn prompt(base: &Path) -> Result<Option<Account>> {
         .lock()
         .read_line(&mut input)
         .context("read selected account")?;
-    resolve_account_selection(input.trim(), &accounts).map(Some)
+    resolve_account_selection(input.trim(), &accounts).map(|account| Some(account.into()))
 }
 
 pub(crate) fn describe(account: &Account) -> String {
