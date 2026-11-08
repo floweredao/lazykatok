@@ -22,6 +22,13 @@
 
 ### Send
 
+- A text send reports `sent: true` only once the message shows up among the
+  room's newest messages, and says how it was confirmed (`confirmed:
+  "transcript"`). An emptied compose box used to be the only evidence. When
+  the box empties but the message never appears, the send now fails with a
+  message saying it may still have been delivered, so it is checked rather
+  than resent. Where the transcript cannot be read at all, the emptied box
+  still counts, reported as `confirmed: "compose_drained"`.
 - A send that has to open a room now works when KakaoTalk is running with
   every window closed, the state it starts in at login. It used to fail every
   time with "KakaoTalk was not frontmost", because a windowless KakaoTalk never

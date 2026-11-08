@@ -740,6 +740,12 @@ pub enum SendError {
     #[error("message stayed in the input box; KakaoTalk did not accept Enter")]
     NotSent,
     #[error(
+        "KakaoTalk took the message for '{0}' (its input box emptied), but it did not appear \
+         among the room's latest messages. It may still have been delivered: check the room \
+         before sending it again"
+    )]
+    DeliveryUnconfirmed(String),
+    #[error(
         "KakaoTalk did not confirm the non-activating Enter; strict background-only mode stopped \
          without any visible fallback (the text may remain in the compose box)"
     )]
@@ -1422,6 +1428,118 @@ fn transcript_row_count(window: AXUIElementRef) -> Option<usize> {
     None
 }
 
+/// What proved a text send delivered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delivery {
+    /// The message appeared among the room's latest transcript rows.
+    Transcript,
+    /// The compose box emptied, and the transcript could not be read to look further.
+    ComposeDrained,
+}
+
+impl Delivery {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Transcript => "transcript",
+            Self::ComposeDrained => "compose_drained",
+        }
+    }
+}
+
+/// Non-empty transcript rows, newest first, that a delivery check reads. A sent message lands
+/// in the newest row; the second tolerates one arriving in the same moment. Every row costs
+/// several AX round trips, so this stays small.
+const CONFIRM_TAIL_ROWS: usize = 2;
+/// Rows read from the end while looking for those, because the newest rows can be empty
+/// spacers. Bounds the AX reads: the history above is never touched.
+const CONFIRM_SCAN_ROWS: usize = 8;
+const CONFIRM_POLLS: u32 = 30;
+const CONFIRM_INTERVAL: Duration = Duration::from_millis(100);
+
+/// How many of the room's newest transcript rows show `text`. `None` when the transcript, or
+/// any text in its newest rows, cannot be read.
+///
+/// A message row is `AXRow > AXCell > [sender, time, ..., AXTextArea]`; every child's value is
+/// compared, since a name or a time never equals a whole message.
+fn transcript_shows(window: AXUIElementRef, text: &str) -> Option<usize> {
+    let table = child_elements(window, ATTR_CHILDREN)
+        .into_iter()
+        .filter(|c| role_of(c.as_raw()) == ROLE_SCROLL_AREA)
+        .find_map(|scroll| {
+            child_elements(scroll.as_raw(), ATTR_CHILDREN)
+                .into_iter()
+                .find(|c| role_of(c.as_raw()) == ROLE_TABLE)
+        })?;
+    let rows = child_elements(table.as_raw(), ATTR_ROWS);
+    // Lazy, so reading stops at the last row the count needs.
+    let tail: Vec<Vec<String>> = rows
+        .iter()
+        .rev()
+        .take(CONFIRM_SCAN_ROWS)
+        .map(|row| {
+            child_elements(row.as_raw(), ATTR_CHILDREN)
+                .iter()
+                .flat_map(|cell| child_elements(cell.as_raw(), ATTR_CHILDREN))
+                .filter_map(|el| attr_string(el.as_raw(), ATTR_VALUE))
+                .collect::<Vec<String>>()
+        })
+        .filter(|values| !values.is_empty())
+        .take(CONFIRM_TAIL_ROWS)
+        .collect();
+    rows_showing(&tail, text)
+}
+
+/// Count the first `CONFIRM_TAIL_ROWS` non-empty rows of `tail` (newest first) holding a value
+/// that shows `text`. `None` when no row holds any value: nothing was readable.
+fn rows_showing(tail: &[Vec<String>], text: &str) -> Option<usize> {
+    let rows: Vec<&Vec<String>> = tail
+        .iter()
+        .filter(|values| !values.is_empty())
+        .take(CONFIRM_TAIL_ROWS)
+        .collect();
+    if rows.is_empty() {
+        return None;
+    }
+    Some(
+        rows.iter()
+            .filter(|values| values.iter().any(|value| shows_message(value, text)))
+            .count(),
+    )
+}
+
+/// Whether a transcript value is `text` as sent, allowing for surrounding whitespace and
+/// line-ending differences.
+fn shows_message(value: &str, text: &str) -> bool {
+    let normalize = |s: &str| s.replace("\r\n", "\n").trim().to_string();
+    let value = normalize(value);
+    !value.is_empty() && value == normalize(text)
+}
+
+/// Turn an accepted send into a confirmed one.
+///
+/// `before` is how many of the newest rows showed the message before it was written; a
+/// delivery adds one. With no readable transcript the emptied compose box is the only evidence,
+/// and the result says so. A readable transcript that never shows it is an error: the box
+/// emptied, so the message may well be in the room, but nothing confirmed it.
+fn confirm_delivery(
+    room: &str,
+    before: Option<usize>,
+    mut shown_now: impl FnMut() -> Option<usize>,
+    polls: u32,
+    interval: Duration,
+) -> Result<Delivery, SendError> {
+    let Some(before) = before else {
+        return Ok(Delivery::ComposeDrained);
+    };
+    for _ in 0..polls {
+        if shown_now().is_some_and(|now| now > before) {
+            return Ok(Delivery::Transcript);
+        }
+        std::thread::sleep(interval);
+    }
+    Err(SendError::DeliveryUnconfirmed(room.to_string()))
+}
+
 fn open_titles(windows: &[AxRef]) -> String {
     let titles = windows
         .iter()
@@ -2034,7 +2152,7 @@ pub fn send_to_open_window(
     text: &str,
     allow_open: bool,
     ctx: &SendContext,
-) -> Result<(), SendError> {
+) -> Result<Delivery, SendError> {
     validate_room_name(&target.name)?;
     if !unsafe { AXIsProcessTrusted() } {
         return Err(SendError::AccessibilityDenied);
@@ -2045,6 +2163,19 @@ pub fn send_to_open_window(
 
     let compose = compose_box(window.as_raw())
         .ok_or_else(|| SendError::ComposeBoxNotFound(target.name.clone()))?;
+
+    // Read before anything is written: the room's latest messages as they stand are the baseline
+    // a delivered message has to add to.
+    let shown_before = transcript_shows(window.as_raw(), text);
+    let confirm = || {
+        confirm_delivery(
+            &target.name,
+            shown_before,
+            || transcript_shows(window.as_raw(), text),
+            CONFIRM_POLLS,
+            CONFIRM_INTERVAL,
+        )
+    };
 
     // Strict mode must never replace a person's draft. This read sits immediately before the
     // compose mutation; an unreadable value is not treated as empty.
@@ -2125,7 +2256,7 @@ pub fn send_to_open_window(
     if on_target().is_ok() {
         press_key(pid, KEY_RETURN, CGEventFlags::CGEventFlagNull)?;
         if accepted(20) {
-            return Ok(());
+            return confirm();
         }
     }
 
@@ -2134,10 +2265,10 @@ pub fn send_to_open_window(
     // answers AXPress, which needs no focus and no activation, so it is tried next — this is
     // still a non-activating route and stays available to background-only sends.
     if !keep_sending(&target.name, compose_value().as_deref(), text)? {
-        return Ok(());
+        return confirm();
     }
     if press_send_button(window.as_raw()) && accepted(20) {
-        return Ok(());
+        return confirm();
     }
 
     // This check is the no-visible-UI boundary. It precedes take_screen, which is the first
@@ -2145,7 +2276,7 @@ pub fn send_to_open_window(
     // raise the room, or post a global key. A background-only caller therefore cannot reach any
     // of those operations, including on the background Enter's failure path.
     if drained() {
-        return Ok(());
+        return confirm();
     }
     ctx.require_visible_fallback()?;
 
@@ -2167,13 +2298,13 @@ pub fn send_to_open_window(
         Ok(Err(error)) | Err(error) => {
             // The raise and the focus write take a moment, and the box can drain inside it.
             if drained() {
-                return Ok(());
+                return confirm();
             }
             return Err(error);
         }
     }
     if accepted(30) {
-        return Ok(());
+        return confirm();
     }
 
     // The web-backed compose ignores synthesized Enter entirely, and its Send button exposes
@@ -2182,10 +2313,10 @@ pub fn send_to_open_window(
     // cannot land in any other window — the same coordinate-safety argument the chat-list
     // double-click relies on.
     if drained() {
-        return Ok(());
+        return confirm();
     }
     if click_send_button(window.as_raw(), pid, &on_target)? && accepted(30) {
-        return Ok(());
+        return confirm();
     }
     Err(SendError::NotSent)
 }
@@ -2691,6 +2822,71 @@ mod room_matching_tests {
         assert!(context
             .require_intended_background_compose("Synthetic Room", "intended", Some("changed"))
             .is_ok());
+    }
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    use super::{confirm_delivery, rows_showing, Delivery, SendError};
+    use std::cell::Cell;
+    use std::time::Duration;
+
+    fn row(values: &[&str]) -> Vec<String> {
+        values.iter().map(|v| v.to_string()).collect()
+    }
+
+    #[test]
+    fn only_the_newest_non_empty_rows_are_counted() {
+        let tail = vec![
+            row(&[]),
+            row(&["10:01", "synthetic hello"]),
+            row(&["10:00", "older"]),
+            row(&["09:59", "synthetic hello"]),
+            row(&["09:58", "synthetic hello"]),
+        ];
+        // The spacer is skipped; of the next two rows one shows it; older rows are out of range.
+        assert_eq!(rows_showing(&tail, "synthetic hello"), Some(1));
+        assert_eq!(rows_showing(&tail, "  synthetic hello\n"), Some(1));
+        assert_eq!(rows_showing(&tail, "older"), Some(1));
+        assert_eq!(rows_showing(&tail, "synthetic"), Some(0));
+        assert_eq!(rows_showing(&[row(&[]), row(&[])], "x"), None);
+    }
+
+    #[test]
+    fn a_new_row_showing_the_message_confirms_it() {
+        let polls = Cell::new(0);
+        let shown = || {
+            polls.set(polls.get() + 1);
+            Some(if polls.get() >= 3 { 2 } else { 1 })
+        };
+        let delivery = confirm_delivery("Synthetic Room", Some(1), shown, 10, Duration::ZERO);
+        assert_eq!(delivery.unwrap(), Delivery::Transcript);
+    }
+
+    #[test]
+    fn an_earlier_identical_message_does_not_confirm_a_new_one() {
+        let result = confirm_delivery("Synthetic Room", Some(1), || Some(1), 5, Duration::ZERO);
+        assert!(matches!(
+            result,
+            Err(SendError::DeliveryUnconfirmed(room)) if room == "Synthetic Room"
+        ));
+    }
+
+    #[test]
+    fn an_unreadable_transcript_falls_back_to_the_drained_box() {
+        let reads = Cell::new(0);
+        let delivery = confirm_delivery(
+            "Synthetic Room",
+            None,
+            || {
+                reads.set(reads.get() + 1);
+                None
+            },
+            5,
+            Duration::ZERO,
+        );
+        assert_eq!(delivery.unwrap(), Delivery::ComposeDrained);
+        assert_eq!(reads.get(), 0);
     }
 }
 
