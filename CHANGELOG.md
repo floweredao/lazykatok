@@ -22,6 +22,24 @@
 
 ### Send
 
+- A step that has to bring KakaoTalk forward (opening a room, pasting an image
+  or a draft, the visible Enter fallback) now hides KakaoTalk again afterwards
+  when it was hidden or had no window before. It used to stay on screen behind
+  the user's app, so every room opened for a send piled up as a visible window.
+  Such a step also works while KakaoTalk is hidden now; it used to fail with
+  "KakaoTalk was not frontmost", because a hidden app ignores the raise.
+- Raising KakaoTalk no longer fails when `send` runs from a terminal in the
+  background. macOS ignores an activation requested by an inactive process, so
+  when the raise does not take, KakaoTalk is opened through LaunchServices
+  once, as a Dock click does.
+- Opening a room now works when KakaoTalk's main window is on its Friends or
+  More tab. Only the Chats tab holds the chat list, so the send failed with
+  "could not find KakaoTalk's chat list"; it now switches to the Chats tab
+  first, pressing the tab's button through Accessibility.
+- `send --ensure-open` makes sure a room's window is open and sends nothing.
+  It returns at once, without touching KakaoTalk, when the window is already
+  open, and reports `opened` so a caller can tell. A room kept open this way
+  takes later sends on the non-activating path.
 - A send that has to open a room now works when KakaoTalk is running with
   every window closed, the state it starts in at login. It used to fail every
   time with "KakaoTalk was not frontmost", because a windowless KakaoTalk never
