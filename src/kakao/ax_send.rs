@@ -2190,23 +2190,76 @@ pub fn send_to_open_window(
     Err(SendError::NotSent)
 }
 
-/// Press the room window's Send button (the AXButton titled "Send").
+/// Deepest level below the room window that the Send-button search inspects. KakaoTalk puts
+/// the button directly under the window; the extra levels tolerate a wrapping group.
+const SEND_BUTTON_MAX_DEPTH: usize = 3;
+
+/// Subtrees the Send-button search never enters. The transcript is a table inside a scroll
+/// area, so its size grows with the room's history, and every node read is one AX round trip.
+/// Walking it made a send cost minutes in a long room on a loaded Mac, and a button inside a
+/// message bubble is never the room's Send button anyway.
+const SEND_SEARCH_SKIPPED_ROLES: [&str; 5] = [
+    ROLE_SCROLL_AREA,
+    ROLE_TABLE,
+    "AXList",
+    "AXOutline",
+    "AXWebArea",
+];
+
+/// Find the room window's Send button (the AXButton titled "Send") in a bounded number of AX
+/// reads.
+///
+/// Level by level: every element of one level is checked before any child list of the next is
+/// fetched, so the usual layout (the button directly under the window) costs one read per
+/// sibling. Buttons are leaves here, the transcript and compose subtrees are skipped, and
+/// nothing below `SEND_BUTTON_MAX_DEPTH` is read, so the cost does not depend on how many
+/// messages the room holds.
+fn find_send_button<N>(
+    window: &N,
+    children: impl Fn(&N) -> Vec<N>,
+    role: impl Fn(&N) -> String,
+    title: impl Fn(&N) -> Option<String>,
+) -> Option<N> {
+    let mut level = children(window);
+    for depth in 1..=SEND_BUTTON_MAX_DEPTH {
+        let mut containers = Vec::new();
+        for node in level {
+            let node_role = role(&node);
+            if node_role == ROLE_BUTTON {
+                if title(&node).as_deref() == Some("Send") {
+                    return Some(node);
+                }
+            } else if !SEND_SEARCH_SKIPPED_ROLES.contains(&node_role.as_str()) {
+                containers.push(node);
+            }
+        }
+        if depth == SEND_BUTTON_MAX_DEPTH {
+            break;
+        }
+        level = containers.iter().flat_map(&children).collect();
+    }
+    None
+}
+
+fn send_button(window: AXUIElementRef) -> Option<AxRef> {
+    find_send_button(
+        &AxRef::retained(window),
+        |el| child_elements(el.as_raw(), ATTR_CHILDREN),
+        |el| role_of(el.as_raw()),
+        |el| attr_string(el.as_raw(), ATTR_TITLE),
+    )
+}
+
+/// Press the room window's Send button.
 ///
 /// Returns `false` when no such button is found or it reports itself disabled, leaving the
 /// caller's error path untouched. Never activates KakaoTalk and never touches focus.
 fn press_send_button(window: AXUIElementRef) -> bool {
-    fn search(el: AXUIElementRef) -> bool {
-        if role_of(el) == ROLE_BUTTON && attr_string(el, ATTR_TITLE).as_deref() == Some("Send") {
-            let action = CFString::new(ACTION_PRESS);
-            return unsafe {
-                AXUIElementPerformAction(el, action.as_concrete_TypeRef()) == AX_SUCCESS
-            };
-        }
-        child_elements(el, ATTR_CHILDREN)
-            .iter()
-            .any(|child| search(child.as_raw()))
-    }
-    search(window)
+    let Some(button) = send_button(window) else {
+        return false;
+    };
+    let action = CFString::new(ACTION_PRESS);
+    unsafe { AXUIElementPerformAction(button.as_raw(), action.as_concrete_TypeRef()) == AX_SUCCESS }
 }
 
 /// Click the room window's Send button at its on-screen center.
@@ -2220,27 +2273,9 @@ fn click_send_button(
     pid: i32,
     on_target: &dyn Fn() -> Result<(), SendError>,
 ) -> Result<bool, SendError> {
-    // The button's geometry is read inside the search, while the child reference that owns it
-    // is still alive. Keeping the raw element past the loop would read a released AX object
-    // (CFGetTypeID on freed memory traps with SIGTRAP).
-    let mut button: Option<Option<CGRect>> = None;
-    fn search(el: AXUIElementRef, found: &mut Option<Option<CGRect>>) {
-        if found.is_some() {
-            return;
-        }
-        if role_of(el) == ROLE_BUTTON && attr_string(el, ATTR_TITLE).as_deref() == Some("Send") {
-            *found = Some(frame_of(el));
-            return;
-        }
-        for child in child_elements(el, ATTR_CHILDREN) {
-            search(child.as_raw(), found);
-            if found.is_some() {
-                return;
-            }
-        }
-    }
-    search(window, &mut button);
-    let Some(Some(rect)) = button else {
+    // `send_button` hands back a retained reference, so the geometry read cannot touch a
+    // released AX object (CFGetTypeID on freed memory traps with SIGTRAP).
+    let Some(rect) = send_button(window).and_then(|button| frame_of(button.as_raw())) else {
         return Ok(false);
     };
     let center = CGPoint::new(
@@ -2656,5 +2691,173 @@ mod room_matching_tests {
         assert!(context
             .require_intended_background_compose("Synthetic Room", "intended", Some("changed"))
             .is_ok());
+    }
+}
+
+#[cfg(test)]
+mod send_button_search_tests {
+    use super::find_send_button;
+    use std::cell::Cell;
+
+    struct Node {
+        role: &'static str,
+        title: Option<&'static str>,
+        in_transcript: bool,
+        children: Vec<Node>,
+    }
+
+    fn node(role: &'static str, title: Option<&'static str>, children: Vec<Node>) -> Node {
+        Node {
+            role,
+            title,
+            in_transcript: false,
+            children,
+        }
+    }
+
+    fn button(title: &'static str) -> Node {
+        node("AXButton", Some(title), Vec::new())
+    }
+
+    /// A message row as KakaoTalk exposes it: a cell holding text and a bubble button. One row
+    /// carries a button titled "Send" so a search that enters the transcript can pick it.
+    fn transcript(rows: usize) -> Node {
+        fn mark(mut n: Node) -> Node {
+            n.in_transcript = true;
+            n.children = n.children.into_iter().map(mark).collect();
+            n
+        }
+        let rows = (0..rows)
+            .map(|i| {
+                let bubble = if i == 0 { "Send" } else { "" };
+                node(
+                    "AXRow",
+                    None,
+                    vec![node(
+                        "AXCell",
+                        None,
+                        vec![node("AXStaticText", None, Vec::new()), button(bubble)],
+                    )],
+                )
+            })
+            .collect();
+        node(
+            "AXScrollArea",
+            None,
+            vec![mark(node("AXTable", None, rows))],
+        )
+    }
+
+    /// The room window layout observed on KakaoTalk for Mac: transcript first, then the
+    /// compose box, the header buttons, and the Send button, all directly under the window.
+    fn room_window(rows: usize) -> Node {
+        let mut children = vec![
+            transcript(rows),
+            node(
+                "AXScrollArea",
+                None,
+                vec![node("AXTextArea", None, Vec::new())],
+            ),
+            node("AXStaticText", None, Vec::new()),
+        ];
+        children.extend(["", "", "", "Friends 2"].map(button));
+        children.push(button("Send"));
+        children.push(button(""));
+        node("AXWindow", None, children)
+    }
+
+    struct Search<'a> {
+        found: Option<&'a Node>,
+        reads: usize,
+        read_transcript: bool,
+    }
+
+    fn search(window: &Node) -> Search<'_> {
+        let reads = Cell::new(0);
+        let read_transcript = Cell::new(false);
+        let read = |n: &Node| {
+            reads.set(reads.get() + 1);
+            read_transcript.set(read_transcript.get() || n.in_transcript);
+        };
+        let found = find_send_button(
+            &window,
+            |n| {
+                read(n);
+                n.children.iter().collect()
+            },
+            |n| {
+                read(n);
+                n.role.to_string()
+            },
+            |n| {
+                read(n);
+                n.title.map(str::to_string)
+            },
+        );
+        Search {
+            found,
+            reads: reads.get(),
+            read_transcript: read_transcript.get(),
+        }
+    }
+
+    #[test]
+    fn a_long_history_costs_the_same_few_reads_as_an_empty_room() {
+        let short = room_window(1);
+        let long = room_window(20_000);
+        let (short, long) = (search(&short), search(&long));
+
+        // The transcript scroll area's own role is read so it can be skipped; nothing inside it.
+        assert!(!long.read_transcript);
+        assert_eq!(long.reads, short.reads);
+        assert!(long.reads <= 20, "{} AX reads", long.reads);
+    }
+
+    #[test]
+    fn the_window_send_button_wins_over_one_inside_a_message() {
+        let window = room_window(3);
+        let found = search(&window).found.expect("Send button");
+        assert!(std::ptr::eq(found, &window.children[7]));
+    }
+
+    #[test]
+    fn a_send_button_wrapped_in_a_group_is_still_found() {
+        let window = node(
+            "AXWindow",
+            None,
+            vec![
+                transcript(100),
+                node(
+                    "AXGroup",
+                    None,
+                    vec![node("AXGroup", None, vec![button("Send")])],
+                ),
+            ],
+        );
+        let result = search(&window);
+        assert!(result
+            .found
+            .is_some_and(|b| b.title == Some("Send") && !b.in_transcript));
+        assert!(!result.read_transcript);
+    }
+
+    #[test]
+    fn a_window_without_send_gives_up_without_entering_the_transcript() {
+        let mut window = room_window(5_000);
+        window.children.retain(|c| c.title != Some("Send"));
+        let result = search(&window);
+        assert!(result.found.is_none());
+        assert!(!result.read_transcript);
+        assert!(result.reads <= 30, "{} AX reads", result.reads);
+    }
+
+    #[test]
+    fn nothing_below_the_depth_cap_is_read() {
+        let mut deep = button("Send");
+        for _ in 0..3 {
+            deep = node("AXGroup", None, vec![deep]);
+        }
+        let window = node("AXWindow", None, vec![deep]);
+        assert!(search(&window).found.is_none());
     }
 }
