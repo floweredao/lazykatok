@@ -92,6 +92,8 @@ const ROLE_TEXT_FIELD: &str = "AXTextField";
 const ATTR_DESCRIPTION: &str = "AXDescription";
 
 const ATTR_FRONTMOST: &str = "AXFrontmost";
+const ATTR_HIDDEN: &str = "AXHidden";
+const ATTR_IDENTIFIER: &str = "AXIdentifier";
 const ATTR_ROWS: &str = "AXRows";
 const ATTR_FOCUSED: &str = "AXFocused";
 const ATTR_FOCUSED_WINDOW: &str = "AXFocusedWindow";
@@ -512,6 +514,9 @@ fn take_screen(pid: i32, ctx: &SendContext, subtitle: &str) -> Result<ScreenHold
         _focus: FocusRestore::capture(pid),
         curtain: ctx.curtain.clone(),
     };
+    // A hidden app ignores the AXFrontmost write the raise relies on, so every raise of a hidden
+    // KakaoTalk ended in FocusLost. The hold above hides it again on the way out.
+    set_hidden(pid, false);
     reopen_if_windowless(pid)?;
     if !raise_and_confirm(pid) {
         return Err(SendError::FocusLost);
@@ -610,29 +615,65 @@ fn activate(pid: i32) {
     };
 }
 
-/// Restores whichever application was frontmost before KakaoTalk was raised.
+/// Hide or unhide `pid`'s application, as Cmd+H and its reverse do. Neither activates it.
+fn set_hidden(pid: i32, hidden: bool) {
+    let app = AxRef(unsafe { AXUIElementCreateApplication(pid) });
+    let key = CFString::new(ATTR_HIDDEN);
+    let value = CFBoolean::from(hidden);
+    unsafe {
+        AXUIElementSetAttributeValue(
+            app.as_raw(),
+            key.as_concrete_TypeRef(),
+            value.as_CFTypeRef(),
+        )
+    };
+}
+
+/// Whether KakaoTalk was out of the user's sight before a step raised it: hidden, or running
+/// with no window at all. Either way the user was not looking at it, so it goes back out of
+/// sight afterwards; leaving it on screen behind their app is what made every room opened for
+/// a send pile up as visible windows. An unreadable hidden flag is not taken as hidden.
+fn was_out_of_sight(hidden: Option<bool>, windows: usize) -> bool {
+    hidden == Some(true) || windows == 0
+}
+
+/// Restores whichever application was frontmost before KakaoTalk was raised, and hides
+/// KakaoTalk again if it was out of sight before.
 ///
 /// Taking focus is unavoidable for a paste; keeping it is not. This runs on
 /// every exit path, including the error ones, so a failed send does not leave
 /// the user staring at KakaoTalk.
 struct FocusRestore {
     previous: Option<i32>,
+    rehide: Option<i32>,
 }
 
 impl FocusRestore {
     /// Remember the current frontmost app, unless it is already `target_pid`,
-    /// in which case there is nothing to restore.
+    /// in which case there is nothing to restore, and whether `target_pid` was out of sight.
     fn capture(target_pid: i32) -> Self {
+        let app = AxRef(unsafe { AXUIElementCreateApplication(target_pid) });
+        let hidden = copy_attr(app.as_raw(), ATTR_HIDDEN).map(|raw| {
+            // copy_attr hands back a +1 reference; wrap_under_create_rule takes it.
+            let value = unsafe { CFBoolean::wrap_under_create_rule(raw as CFBooleanRef) };
+            value == CFBoolean::true_value()
+        });
+        let windows = child_elements(app.as_raw(), ATTR_WINDOWS).len();
         Self {
             previous: frontmost_pid().filter(|pid| *pid != target_pid),
+            rehide: was_out_of_sight(hidden, windows).then_some(target_pid),
         }
     }
 }
 
 impl Drop for FocusRestore {
     fn drop(&mut self) {
+        // The user's app first, so hiding KakaoTalk never has to pick what comes forward.
         if let Some(pid) = self.previous {
             activate(pid);
+        }
+        if let Some(pid) = self.rehide {
+            set_hidden(pid, true);
         }
     }
 }
@@ -649,22 +690,45 @@ impl Drop for FocusRestore {
 fn reopen_if_windowless(pid: i32) -> Result<(), SendError> {
     let app = AxRef(unsafe { AXUIElementCreateApplication(pid) });
     let has_window = || !child_elements(app.as_raw(), ATTR_WINDOWS).is_empty();
-    if has_window() {
-        return Ok(());
-    }
-    let status = Command::new("open")
+    reopen_until(has_window, send_reopen, REOPEN_POLLS, REOPEN_POLL_INTERVAL)
+        .map(|_| ())
+        .ok_or(SendError::NoWindow)
+}
+
+const REOPEN_POLLS: u32 = 30;
+const REOPEN_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Send KakaoTalk a reopen event, as clicking its Dock icon does. See [`reopen_if_windowless`].
+fn send_reopen() -> bool {
+    Command::new("open")
         .args(["-g", "-b", KAKAOTALK_BUNDLE_ID])
-        .status();
-    if !status.is_ok_and(|s| s.success()) {
-        return Err(SendError::NoWindow);
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// Run `reopen` only when `ready` does not already hold, then wait for it.
+///
+/// `Some(false)`: it already held and nothing was run. `Some(true)`: it holds afterwards.
+/// `None`: `reopen` failed or `ready` never came to hold.
+fn reopen_until(
+    ready: impl Fn() -> bool,
+    reopen: impl FnOnce() -> bool,
+    polls: u32,
+    interval: Duration,
+) -> Option<bool> {
+    if ready() {
+        return Some(false);
     }
-    for _ in 0..30 {
-        if has_window() {
-            return Ok(());
+    if !reopen() {
+        return None;
+    }
+    for _ in 0..polls {
+        if ready() {
+            return Some(true);
         }
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(interval);
     }
-    Err(SendError::NoWindow)
+    None
 }
 
 /// Bring `pid` forward and confirm it actually got there.
@@ -672,14 +736,48 @@ fn reopen_if_windowless(pid: i32) -> Result<(), SendError> {
 /// Returns `false` when the app never became frontmost, which the caller must
 /// treat as "do not post a global key" rather than pressing on.
 fn raise_and_confirm(pid: i32) -> bool {
-    activate(pid);
-    for _ in 0..25 {
-        if app_is_frontmost(pid) {
+    raise_with(
+        || activate(pid),
+        launch_services_open,
+        || app_is_frontmost(pid),
+        25,
+        Duration::from_millis(40),
+    )
+}
+
+/// Ask LaunchServices to open KakaoTalk, as clicking its Dock icon does.
+///
+/// macOS refuses an activation requested by a process that is not itself active, so the
+/// AXFrontmost write in [`activate`] is ignored whenever the terminal running this is in the
+/// background. An `open` is the user-intent route and is honoured; it also unhides the app.
+fn launch_services_open() {
+    let _ = Command::new("open")
+        .args(["-b", KAKAOTALK_BUNDLE_ID])
+        .status();
+}
+
+/// Activate, and when that has not taken within the first half of `polls`, open once.
+fn raise_with(
+    activate: impl Fn(),
+    open: impl FnOnce(),
+    is_front: impl Fn() -> bool,
+    polls: u32,
+    interval: Duration,
+) -> bool {
+    activate();
+    let mut open = Some(open);
+    for poll in 0..polls {
+        if is_front() {
             return true;
         }
-        std::thread::sleep(Duration::from_millis(40));
+        if poll == polls / 2 {
+            if let Some(open) = open.take() {
+                open();
+            }
+        }
+        std::thread::sleep(interval);
     }
-    false
+    is_front()
 }
 
 /// Re-assert frontmost and immediately perform `action`.
@@ -1502,6 +1600,26 @@ fn chat_list_table(windows: &[AxRef]) -> Option<AxRef> {
     chat_list_table_in(main_window(windows)?.as_raw())
 }
 
+/// AXIdentifier of the main window's Chats tab button.
+const CHATS_TAB_ID: &str = "chatrooms";
+
+/// Switch the main window to its Chats tab. `false` when no such button exists or the press
+/// fails. AXPress reaches the button directly, so nothing is activated.
+fn press_chats_tab(windows: &[AxRef]) -> bool {
+    let Some(button) = windows.iter().find_map(|w| {
+        child_elements(w.as_raw(), ATTR_CHILDREN)
+            .into_iter()
+            .find(|c| {
+                role_of(c.as_raw()) == ROLE_BUTTON
+                    && attr_string(c.as_raw(), ATTR_IDENTIFIER).as_deref() == Some(CHATS_TAB_ID)
+            })
+    }) else {
+        return false;
+    };
+    let action = CFString::new(ACTION_PRESS);
+    unsafe { AXUIElementPerformAction(button.as_raw(), action.as_concrete_TypeRef()) == AX_SUCCESS }
+}
+
 /// Room name of a chat-list row: `AXRow > AXCell > first AXStaticText`.
 ///
 /// Kept deliberately shallow. A generic descendant crawl performs many AX
@@ -1927,10 +2045,20 @@ fn resolve_window(
     let hold = take_screen(pid, ctx, &format!("{} 채팅방 여는 중", target.name))?;
     // Taking the screen may have reopened a windowless KakaoTalk, so the list read
     // above can be stale: the chat list the strategies below drive may only exist now.
-    let (windows, hits) = find();
+    let (mut windows, hits) = find();
     if let [i] = hits[..] {
         drop(hold);
         return Ok(AxRef::retained(windows[i].as_raw()));
+    }
+    // The main window holds the chat list only on its Chats tab. Left on Friends or More, it has
+    // no list to open from and every strategy below failed with ChatListUnavailable. The tab is
+    // switched with AXPress on its button, found by its identifier rather than by position.
+    if chat_list_table(&windows).is_none() {
+        let has_list = || chat_list_table(&child_elements(app.as_raw(), ATTR_WINDOWS)).is_some();
+        let show_chats = || press_chats_tab(&windows);
+        if reopen_until(has_list, show_chats, REOPEN_POLLS, REOPEN_POLL_INTERVAL) == Some(true) {
+            windows = find().0;
+        }
     }
 
     // Each strategy is tried more than once. Driving another app's list is
@@ -2410,6 +2538,25 @@ pub fn resolve_room_window(
     resolve_window(&app, target, allow_open, ctx).map(|_| ())
 }
 
+/// Whether the chat window for `room` is already open, read without activating anything.
+///
+/// The cheap first step of `--ensure-open`: when it is, there is nothing to open, so no curtain,
+/// focus wait, or raise is needed. Two open windows sharing the name are an error, as for a send.
+pub fn room_window_open(target: &RoomTarget) -> Result<bool, SendError> {
+    validate_room_name(&target.name)?;
+    if !unsafe { AXIsProcessTrusted() } {
+        return Err(SendError::AccessibilityDenied);
+    }
+    let pid = kakaotalk_pid().ok_or(SendError::NotRunning)?;
+    let app = AxRef(unsafe { AXUIElementCreateApplication(pid) });
+    let ctx = SendContext::background_only(FocusPolicy::immediate());
+    match resolve_window(&app, target, false, &ctx) {
+        Ok(_) => Ok(true),
+        Err(SendError::WindowNotOpen { .. }) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 /// Room names from the chat list, newest first. Used to find the exact name to pass to `--room`.
 pub fn chat_list_rooms(limit: usize) -> Result<Vec<String>, SendError> {
     if !unsafe { AXIsProcessTrusted() } {
@@ -2691,6 +2838,98 @@ mod room_matching_tests {
         assert!(context
             .require_intended_background_compose("Synthetic Room", "intended", Some("changed"))
             .is_ok());
+    }
+}
+
+#[cfg(test)]
+mod restore_tests {
+    use super::{raise_with, reopen_until, was_out_of_sight};
+    use std::cell::Cell;
+    use std::time::Duration;
+
+    #[test]
+    fn kakaotalk_goes_back_out_of_sight_only_if_it_was() {
+        assert!(was_out_of_sight(Some(true), 3));
+        assert!(was_out_of_sight(Some(false), 0));
+        assert!(was_out_of_sight(None, 0));
+        // Visible with windows on screen: the user may be looking at it, so it stays.
+        assert!(!was_out_of_sight(Some(false), 2));
+        assert!(!was_out_of_sight(None, 2));
+    }
+
+    #[test]
+    fn a_reopen_is_sent_only_when_needed() {
+        let reopened = Cell::new(false);
+        let outcome = reopen_until(
+            || true,
+            || {
+                reopened.set(true);
+                true
+            },
+            3,
+            Duration::ZERO,
+        );
+        assert_eq!(outcome, Some(false));
+        assert!(!reopened.get());
+    }
+
+    #[test]
+    fn a_reopen_waits_for_the_window_to_appear() {
+        let reopened = Cell::new(false);
+        let checks = Cell::new(0);
+        let ready = || {
+            checks.set(checks.get() + 1);
+            reopened.get() && checks.get() >= 3
+        };
+        let outcome = reopen_until(
+            ready,
+            || {
+                reopened.set(true);
+                true
+            },
+            5,
+            Duration::ZERO,
+        );
+        assert_eq!(outcome, Some(true));
+    }
+
+    #[test]
+    fn a_raise_opens_only_when_activation_is_ignored() {
+        let opened = Cell::new(false);
+        assert!(raise_with(
+            || {},
+            || opened.set(true),
+            || true,
+            10,
+            Duration::ZERO
+        ));
+        assert!(!opened.get());
+
+        // Activation refused: the open is what brings it forward.
+        let opened = Cell::new(false);
+        assert!(raise_with(
+            || {},
+            || opened.set(true),
+            || opened.get(),
+            10,
+            Duration::ZERO
+        ));
+
+        let opens = Cell::new(0);
+        assert!(!raise_with(
+            || {},
+            || opens.set(opens.get() + 1),
+            || false,
+            10,
+            Duration::ZERO
+        ));
+        assert_eq!(opens.get(), 1, "one open, not one per poll");
+    }
+
+    #[test]
+    fn a_failed_or_fruitless_reopen_is_reported() {
+        assert_eq!(reopen_until(|| false, || false, 5, Duration::ZERO), None);
+        assert_eq!(reopen_until(|| false, || true, 5, Duration::ZERO), None);
     }
 }
 

@@ -208,6 +208,26 @@ pub(crate) enum Commands {
             required_unless_present_any = ["chat", "list_windows", "list_rooms"]
         )]
         room: Option<String>,
+        /// Make sure the room's window is open, and send nothing.
+        ///
+        /// Returns at once when the window is already open, without touching KakaoTalk.
+        /// Otherwise it opens the room like a send would, then hides KakaoTalk again if it was
+        /// hidden or had no window before. A room kept open this way takes later sends on the
+        /// non-activating path, including `--no-open --background-only`.
+        #[arg(
+            long,
+            conflicts_with_all = [
+                "text",
+                "image",
+                "draft",
+                "dry_run",
+                "no_open",
+                "background_only",
+                "list_windows",
+                "list_rooms"
+            ]
+        )]
+        ensure_open: bool,
         /// Address the room by its `chat_id`, as `search` and `chunks` report it.
         ///
         /// Unambiguous: the name and the last-message time are both read from the archive, and
@@ -462,6 +482,34 @@ mod tests {
                     ..
                 }
             ));
+        }
+    }
+
+    #[test]
+    fn ensure_open_takes_a_target_and_no_message() {
+        let cli = Cli::try_parse_from(["lazykatok", "send", "--chat", "1", "--ensure-open"])
+            .expect("--ensure-open with a target parses");
+        assert!(matches!(
+            cli.command,
+            Commands::Send {
+                ensure_open: true,
+                ..
+            }
+        ));
+
+        assert!(Cli::try_parse_from(["lazykatok", "send", "--ensure-open"]).is_err());
+        for extra in [
+            ["--text", "hi"],
+            ["--dry-run", "--json"],
+            ["--no-open", "--json"],
+        ] {
+            let mut args = vec!["lazykatok", "send", "--chat", "1", "--ensure-open"];
+            args.extend(extra);
+            assert!(
+                Cli::try_parse_from(&args).is_err(),
+                "--ensure-open must refuse {}",
+                extra[0]
+            );
         }
     }
 }
