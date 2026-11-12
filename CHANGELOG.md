@@ -111,6 +111,10 @@
   the body is stored only when it sniffs as an image.
 - The reader keeps emoticon rows that carry no text. They were dropped with
   every other empty row, so a bare emoticon never reached `watch` or the archive.
+- Animated emoticons are stored as animated WebP instead of a stub. The
+  catalog scrambles the first 128 bytes of an animated emoticon with a fixed
+  keystream, so the body never sniffed as an image; it is now unscrambled first
+  and still stored only when the result sniffs as one.
 
 ### Doctor
 
