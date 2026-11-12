@@ -691,6 +691,7 @@ pub(crate) fn run(
         #[cfg(all(target_os = "macos", feature = "private-send"))]
         Commands::Send {
             room,
+            ensure_open,
             chat,
             text,
             image,
@@ -707,6 +708,7 @@ pub(crate) fn run(
             json,
         } => run_send(
             room,
+            ensure_open,
             chat,
             text,
             image,
@@ -1769,6 +1771,7 @@ fn sync_watch_messages(
 #[cfg(all(target_os = "macos", feature = "private-send"))]
 fn run_send(
     room: Option<String>,
+    ensure_open: bool,
     chat: Option<String>,
     text: Option<String>,
     image: Option<PathBuf>,
@@ -1796,7 +1799,7 @@ fn run_send(
         let rooms = ax_send::chat_list_rooms(limit)?;
         return print_payload(json, &serde_json::json!({ "rooms": rooms }));
     }
-    if !dry_run && !accept_use_policy {
+    if !dry_run && !ensure_open && !accept_use_policy {
         anyhow::bail!(
             "refusing to continue without --accept-use-policy; read \
              ACCEPTABLE_USE_POLICY.md and DISCLAIMER.md"
@@ -1818,7 +1821,7 @@ fn run_send(
     // Read stdin before the curtain goes up: a blocked terminal behind a
     // full-screen overlay waiting for input the user cannot give would be a
     // deadlock they can only escape by killing the process.
-    let body = if dry_run || image.is_some() {
+    let body = if dry_run || ensure_open || image.is_some() {
         None
     } else {
         let body = match text {
@@ -1861,13 +1864,20 @@ fn run_send(
         (None, None) => anyhow::bail!("pass --room or --chat"),
     };
     let room_display = target.name.clone();
+    // An open window needs nothing done to it, so the curtain is never set up for it.
+    if ensure_open && ax_send::room_window_open(&target)? {
+        return print_payload(
+            json,
+            &serde_json::json!({ "open": true, "opened": false, "room": room_display }),
+        );
+    }
     let target_owned = target.clone();
     let image_owned = image.clone();
     let body_owned = body.clone();
     // The curtain says what is actually happening. It used to read "전송중" for
     // every operation, including ones that send nothing at all — the same kind
     // of claim that made a draft mode report `sent: false` while delivering.
-    let curtain_title = if dry_run {
+    let curtain_title = if dry_run || ensure_open {
         "카톡 채팅방 여는 중"
     } else if draft {
         "카톡 초안 넣는 중"
@@ -1892,7 +1902,7 @@ fn run_send(
 
     let outcome = lazykatok::kakao::send_curtain::run_with_curtain(curtain_title, move |curtain| {
         let ctx = ax_send::SendContext::with_curtain(policy, curtain);
-        if dry_run {
+        if dry_run || ensure_open {
             return ax_send::resolve_room_window(&target_owned, allow_open, &ctx).map(|()| None);
         }
         if let Some(path) = &image_owned {
@@ -1914,6 +1924,12 @@ fn run_send(
         Err(_) => anyhow::bail!("the send thread panicked; nothing was confirmed sent"),
     };
 
+    if ensure_open {
+        return print_payload(
+            json,
+            &serde_json::json!({ "open": true, "opened": true, "room": room_display }),
+        );
+    }
     if dry_run {
         return print_payload(
             json,
