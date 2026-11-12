@@ -14,6 +14,13 @@
   share an archive.
 - `watch --select` on the macOS source asks which account to use when more
   than one opens and none was given.
+- `send --account <user-id>` no longer derives every account's key on each
+  run. `send` reads only katok's own archive, so an account katok has already
+  read is taken from the data dir pinned to it, which took a send from several
+  seconds of key derivation to none. It no longer confirms that the account's
+  database is still on this Mac; commands that read KakaoTalk's database, an
+  id read for the first time, and `--account latest` still list and verify
+  the accounts.
 
 ### Reply TUI
 
@@ -47,6 +54,10 @@
   It returns at once, without touching KakaoTalk, when the window is already
   open, and reports `opened` so a caller can tell. A room kept open this way
   takes later sends on the non-activating path.
+- `send --text` takes a message that starts with "-" (`--text "-5 min"`)
+  without the `--text=` spelling. A body that is only a long flag, such as
+  `--json`, is refused rather than sent, since that is a forgotten value
+  swallowing the next flag; pipe it on stdin to send it literally.
 - A send that has to open a room now works when KakaoTalk is running with
   every window closed, the state it starts in at login. It used to fail every
   time with "KakaoTalk was not frontmost", because a windowless KakaoTalk never
