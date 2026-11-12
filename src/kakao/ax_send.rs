@@ -227,11 +227,47 @@ fn attr_string(el: AXUIElementRef, attribute: &str) -> Option<String> {
     Some(s.to_string())
 }
 
+/// An Accessibility read the app did not answer: it is busy or still starting
+/// (`kAXErrorCannotComplete` once the messaging timeout runs out), or the element is gone.
+///
+/// Unlike an attribute that has no value, it says nothing about what is there. Read as "none",
+/// a busy KakaoTalk looks like one with no windows open and no new messages in the room.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Unanswered;
+
+const AX_ERROR_ATTRIBUTE_UNSUPPORTED: AXError = -25205;
+const AX_ERROR_NO_VALUE: AXError = -25212;
+
+/// [`copy_attr`], keeping an unanswered read apart from an attribute with no value.
+fn read_attr(el: AXUIElementRef, attribute: &str) -> Result<Option<CFTypeRef>, Unanswered> {
+    let key = CFString::new(attribute);
+    let mut out: CFTypeRef = std::ptr::null();
+    match unsafe { AXUIElementCopyAttributeValue(el, key.as_concrete_TypeRef(), &mut out) } {
+        AX_SUCCESS => Ok((!out.is_null()).then_some(out)),
+        AX_ERROR_NO_VALUE | AX_ERROR_ATTRIBUTE_UNSUPPORTED => Ok(None),
+        _ => Err(Unanswered),
+    }
+}
+
+/// [`attr_string`], keeping an unanswered read apart from an attribute with no value.
+fn read_string(el: AXUIElementRef, attribute: &str) -> Result<Option<String>, Unanswered> {
+    Ok(read_attr(el, attribute)?.map(|raw| {
+        // wrap_under_create_rule takes ownership of the +1 reference returned above.
+        unsafe { CFString::wrap_under_create_rule(raw as CFStringRef) }.to_string()
+    }))
+}
+
 /// Copy out the child elements of `attribute`, retaining each so they stay valid after the
-/// backing array is released.
+/// backing array is released. An unanswered read reads as no children; where that would be
+/// taken for a fact about the app, use [`read_children`].
 fn child_elements(el: AXUIElementRef, attribute: &str) -> Vec<AxRef> {
-    let Some(raw) = copy_attr(el, attribute) else {
-        return Vec::new();
+    read_children(el, attribute).unwrap_or_default()
+}
+
+/// [`child_elements`], keeping an unanswered read apart from an empty list.
+fn read_children(el: AXUIElementRef, attribute: &str) -> Result<Vec<AxRef>, Unanswered> {
+    let Some(raw) = read_attr(el, attribute)? else {
+        return Ok(Vec::new());
     };
     let array = raw as CFArrayRef;
     let count = unsafe { CFArrayGetCount(array) };
@@ -243,7 +279,7 @@ fn child_elements(el: AXUIElementRef, attribute: &str) -> Vec<AxRef> {
         }
     }
     unsafe { CFRelease(raw) };
-    out
+    Ok(out)
 }
 
 fn role_of(el: AXUIElementRef) -> String {
@@ -632,9 +668,10 @@ fn set_hidden(pid: i32, hidden: bool) {
 /// Whether KakaoTalk was out of the user's sight before a step raised it: hidden, or running
 /// with no window at all. Either way the user was not looking at it, so it goes back out of
 /// sight afterwards; leaving it on screen behind their app is what made every room opened for
-/// a send pile up as visible windows. An unreadable hidden flag is not taken as hidden.
-fn was_out_of_sight(hidden: Option<bool>, windows: usize) -> bool {
-    hidden == Some(true) || windows == 0
+/// a send pile up as visible windows. An unreadable hidden flag is not taken as hidden, and an
+/// unanswered window list is not taken as no windows.
+fn was_out_of_sight(hidden: Option<bool>, windows: Option<usize>) -> bool {
+    hidden == Some(true) || windows == Some(0)
 }
 
 /// Restores whichever application was frontmost before KakaoTalk was raised, and hides
@@ -658,7 +695,9 @@ impl FocusRestore {
             let value = unsafe { CFBoolean::wrap_under_create_rule(raw as CFBooleanRef) };
             value == CFBoolean::true_value()
         });
-        let windows = child_elements(app.as_raw(), ATTR_WINDOWS).len();
+        let windows = read_children(app.as_raw(), ATTR_WINDOWS)
+            .ok()
+            .map(|w| w.len());
         Self {
             previous: frontmost_pid().filter(|pid| *pid != target_pid),
             rehide: was_out_of_sight(hidden, windows).then_some(target_pid),
@@ -689,7 +728,16 @@ impl Drop for FocusRestore {
 /// wait and the focus restore.
 fn reopen_if_windowless(pid: i32) -> Result<(), SendError> {
     let app = AxRef(unsafe { AXUIElementCreateApplication(pid) });
-    let has_window = || !child_elements(app.as_raw(), ATTR_WINDOWS).is_empty();
+    let windows = || read_children(app.as_raw(), ATTR_WINDOWS);
+    // A window list KakaoTalk did not answer is not an empty one: a busy app was reopened, and
+    // the send then failed as NoWindow with the room's window still open.
+    if !answered(windows, ANSWER_BUDGET, REOPEN_POLL_INTERVAL)
+        .ok_or(SendError::NotResponding)?
+        .is_empty()
+    {
+        return Ok(());
+    }
+    let has_window = || windows().is_ok_and(|w| !w.is_empty());
     reopen_until(has_window, send_reopen, REOPEN_POLLS, REOPEN_POLL_INTERVAL)
         .map(|_| ())
         .ok_or(SendError::NoWindow)
@@ -697,6 +745,28 @@ fn reopen_if_windowless(pid: i32) -> Result<(), SendError> {
 
 const REOPEN_POLLS: u32 = 30;
 const REOPEN_POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// How long KakaoTalk may leave a read unanswered before a step that needs the answer gives up,
+/// wall clock. One unanswered read already costs the messaging timeout, about 1.5 s.
+const ANSWER_BUDGET: Duration = Duration::from_secs(10);
+
+/// Repeat `read` until the app answers, for at most `budget` and at least once. `None` when it
+/// never did.
+fn answered<T>(
+    mut read: impl FnMut() -> Result<T, Unanswered>,
+    budget: Duration,
+    interval: Duration,
+) -> Option<T> {
+    let deadline = Instant::now() + budget;
+    loop {
+        if let Ok(value) = read() {
+            return Some(value);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(interval);
+    }
+}
 
 /// Send KakaoTalk a reopen event, as clicking its Dock icon does. See [`reopen_if_windowless`].
 fn send_reopen() -> bool {
@@ -908,6 +978,12 @@ pub enum SendError {
          brought forward. Nothing was sent; click its Dock icon and retry."
     )]
     NoWindow,
+    #[error(
+        "KakaoTalk did not answer Accessibility requests for {secs}s, so it could not be told \
+         which of its windows are open. It is busy or still starting. Nothing was sent; retry.",
+        secs = ANSWER_BUDGET.as_secs()
+    )]
+    NotResponding,
     #[error(
         "the chat list reordered while '{room}' was being opened, so the click was not sent — \
          it would have landed on whichever room took that position. Nothing was opened; retry."
@@ -1549,8 +1625,9 @@ impl Delivery {
 const CONFIRM_SCAN_ROWS: usize = 8;
 /// How long a delivered message may take to appear in the transcript, wall clock. A deadline
 /// rather than a poll count, because one poll is several AX round trips and those are slow on a
-/// loaded Mac.
-const CONFIRM_BUDGET: Duration = Duration::from_secs(3);
+/// loaded Mac: a read the app leaves unanswered alone costs the messaging timeout, about 1.5 s.
+/// A confirmed send returns as soon as its row shows, so only an unconfirmed one waits it out.
+const CONFIRM_BUDGET: Duration = Duration::from_secs(10);
 const CONFIRM_INTERVAL: Duration = Duration::from_millis(100);
 /// A transcript value at least this long that the message starts with is the message shown
 /// collapsed, as KakaoTalk shows long messages behind a "show all" link.
@@ -1571,7 +1648,7 @@ fn transcript_rows(window: AXUIElementRef) -> Option<Vec<AxRef>> {
                 .into_iter()
                 .find(|c| role_of(c.as_raw()) == ROLE_TABLE)
         })?;
-    Some(child_elements(table.as_raw(), ATTR_ROWS))
+    read_children(table.as_raw(), ATTR_ROWS).ok()
 }
 
 fn transcript_mark(window: AXUIElementRef) -> Option<TranscriptMark> {
@@ -1583,9 +1660,6 @@ fn transcript_mark(window: AXUIElementRef) -> Option<TranscriptMark> {
 }
 
 /// Whether a row added since `mark` shows `text`. `None` when the transcript cannot be read.
-///
-/// A message row is `AXRow > AXCell > [sender, time, ..., AXTextArea]`; every child's value is
-/// compared, since a name or a time never equals a whole message.
 fn transcript_shows_since(
     window: AXUIElementRef,
     mark: &TranscriptMark,
@@ -1599,13 +1673,38 @@ fn transcript_shows_since(
         |a, b| same_element(a.as_raw(), b.as_raw()),
         CONFIRM_SCAN_ROWS,
     );
-    Some(new.iter().rev().any(|row| {
-        child_elements(row.as_raw(), ATTR_CHILDREN)
-            .iter()
-            .flat_map(|cell| child_elements(cell.as_raw(), ATTR_CHILDREN))
-            .filter_map(|el| attr_string(el.as_raw(), ATTR_VALUE))
-            .any(|value| shows_message(&value, text))
-    }))
+    shows_among(new.iter().rev(), |row| row_values(row.as_raw()), text)
+}
+
+/// Every value a message row holds. A row is `AXRow > AXCell > [sender, time, ..., AXTextArea]`;
+/// every child's value is kept, since a name or a time never equals a whole message.
+fn row_values(row: AXUIElementRef) -> Result<Vec<String>, Unanswered> {
+    let mut values = Vec::new();
+    for cell in read_children(row, ATTR_CHILDREN)? {
+        for el in read_children(cell.as_raw(), ATTR_CHILDREN)? {
+            values.extend(read_string(el.as_raw(), ATTR_VALUE)?);
+        }
+    }
+    Ok(values)
+}
+
+/// Whether any of `rows` shows `text`. `None` when none does and one went unread, since that
+/// one may be the message: a busy KakaoTalk leaves reads unanswered, and those used to read as
+/// rows without it.
+fn shows_among<R>(
+    rows: impl IntoIterator<Item = R>,
+    values: impl Fn(R) -> Result<Vec<String>, Unanswered>,
+    text: &str,
+) -> Option<bool> {
+    let mut unread = false;
+    for row in rows {
+        match values(row) {
+            Ok(values) if values.iter().any(|v| shows_message(v, text)) => return Some(true),
+            Ok(_) => {}
+            Err(Unanswered) => unread = true,
+        }
+    }
+    (!unread).then_some(false)
 }
 
 /// The rows of `rows` added after a mark of `mark_rows` rows whose newest was `mark_last`,
@@ -1653,35 +1752,44 @@ fn shows_message(value: &str, text: &str) -> bool {
 /// `marked` says whether the transcript was readable before the send; `shows` reports whether
 /// a row added since shows the message, or `None` when the transcript cannot be read. With no
 /// readable transcript the emptied compose box is the only evidence, and the result says so.
-/// A transcript that stays readable and never shows it is an error: the box emptied, so the
-/// message may well be in the room, but nothing confirmed it.
+/// A transcript that is still readable at the deadline and never showed it is an error: the box
+/// emptied, so the message may well be in the room, but nothing confirmed it. The last read
+/// decides, not any earlier one: a transcript read once before the row arrived and unanswered
+/// since was never seen without the message.
 fn confirm_delivery(
     room: &str,
     marked: bool,
-    mut shows: impl FnMut() -> Option<bool>,
+    shows: impl FnMut() -> Option<bool>,
     budget: Duration,
+    interval: Duration,
+) -> Result<Delivery, SendError> {
+    let deadline = Instant::now() + budget;
+    confirm_until(room, marked, shows, || Instant::now() >= deadline, interval)
+}
+
+/// [`confirm_delivery`] with the deadline as a question, so a test can say when it has passed.
+fn confirm_until(
+    room: &str,
+    marked: bool,
+    mut shows: impl FnMut() -> Option<bool>,
+    mut past_deadline: impl FnMut() -> bool,
     interval: Duration,
 ) -> Result<Delivery, SendError> {
     if !marked {
         return Ok(Delivery::ComposeDrained);
     }
-    let deadline = Instant::now() + budget;
-    let mut readable = false;
     loop {
-        match shows() {
-            Some(true) => return Ok(Delivery::Transcript),
-            Some(false) => readable = true,
-            None => {}
+        let read = shows();
+        if read == Some(true) {
+            return Ok(Delivery::Transcript);
         }
-        if Instant::now() >= deadline {
-            break;
+        if past_deadline() {
+            return match read {
+                Some(_) => Err(SendError::DeliveryUnconfirmed(room.to_string())),
+                None => Ok(Delivery::ComposeDrained),
+            };
         }
         std::thread::sleep(interval);
-    }
-    if readable {
-        Err(SendError::DeliveryUnconfirmed(room.to_string()))
-    } else {
-        Ok(Delivery::ComposeDrained)
     }
 }
 
@@ -2154,9 +2262,8 @@ fn resolve_window(
     allow_open: bool,
     ctx: &SendContext,
 ) -> Result<AxRef, SendError> {
-    let find = || {
-        let windows = child_elements(app.as_raw(), ATTR_WINDOWS);
-        let hits: Vec<usize> = windows
+    let hits_in = |windows: &[AxRef]| -> Vec<usize> {
+        windows
             .iter()
             .enumerate()
             .filter(|(_, w)| {
@@ -2164,11 +2271,24 @@ fn resolve_window(
                     .is_some_and(|title| room_matches(&title, &target.name))
             })
             .map(|(i, _)| i)
-            .collect();
+            .collect()
+    };
+    let find = || {
+        let windows = child_elements(app.as_raw(), ATTR_WINDOWS);
+        let hits = hits_in(&windows);
         (windows, hits)
     };
 
-    let (windows, hits) = find();
+    // What decides whether the room has to be opened, so an unanswered read is waited out rather
+    // than taken as no windows: a busy KakaoTalk made an open room look closed, and the send then
+    // took the screen to open it again.
+    let windows = answered(
+        || read_children(app.as_raw(), ATTR_WINDOWS),
+        ANSWER_BUDGET,
+        REOPEN_POLL_INTERVAL,
+    )
+    .ok_or(SendError::NotResponding)?;
+    let hits = hits_in(&windows);
     // An already-open window is the fast path, but two rooms sharing a name can
     // each have one, and a window title carries no more identity than a list row
     // does. Refuse for the same reason.
@@ -3030,7 +3150,10 @@ mod room_matching_tests {
 
 #[cfg(test)]
 mod delivery_tests {
-    use super::{confirm_delivery, rows_since, shows_message, Delivery, SendError};
+    use super::{
+        confirm_delivery, confirm_until, rows_since, shows_among, shows_message, Delivery,
+        SendError, Unanswered,
+    };
     use std::cell::Cell;
     use std::time::Duration;
 
@@ -3149,22 +3272,86 @@ mod delivery_tests {
         );
         assert_eq!(after.unwrap(), Delivery::ComposeDrained);
     }
+
+    #[test]
+    fn an_unanswered_row_is_not_a_row_without_the_message() {
+        let read = |row: Result<Vec<&str>, Unanswered>| {
+            row.map(|values| values.into_iter().map(String::from).collect())
+        };
+        let rows = [Ok(vec!["their reply"]), Err(Unanswered)];
+        assert_eq!(shows_among(rows, read, "synthetic hello"), None);
+        // A row that shows it confirms it, whatever else went unread.
+        let rows = [
+            Err(Unanswered),
+            Ok(vec!["Synthetic Sender", "synthetic hello"]),
+        ];
+        assert_eq!(shows_among(rows, read, "synthetic hello"), Some(true));
+        let rows = [Ok(vec!["their reply"])];
+        assert_eq!(shows_among(rows, read, "synthetic hello"), Some(false));
+    }
+
+    #[test]
+    fn a_transcript_unanswered_at_the_deadline_falls_back_to_the_drained_box() {
+        // Read once before the row arrived, then left unanswered by a busy app until the end.
+        let reads = Cell::new(0);
+        let shows = || {
+            reads.set(reads.get() + 1);
+            (reads.get() == 1).then_some(false)
+        };
+        let result = confirm_until(
+            "Synthetic Room",
+            true,
+            shows,
+            || reads.get() >= 3,
+            Duration::ZERO,
+        );
+        assert_eq!(result.unwrap(), Delivery::ComposeDrained);
+        assert_eq!(reads.get(), 3);
+    }
 }
 
 #[cfg(test)]
 mod restore_tests {
-    use super::{raise_with, reopen_until, was_out_of_sight};
+    use super::{answered, raise_with, reopen_until, was_out_of_sight, Unanswered};
     use std::cell::Cell;
     use std::time::Duration;
 
     #[test]
     fn kakaotalk_goes_back_out_of_sight_only_if_it_was() {
-        assert!(was_out_of_sight(Some(true), 3));
-        assert!(was_out_of_sight(Some(false), 0));
-        assert!(was_out_of_sight(None, 0));
+        assert!(was_out_of_sight(Some(true), Some(3)));
+        assert!(was_out_of_sight(Some(false), Some(0)));
+        assert!(was_out_of_sight(None, Some(0)));
         // Visible with windows on screen: the user may be looking at it, so it stays.
-        assert!(!was_out_of_sight(Some(false), 2));
-        assert!(!was_out_of_sight(None, 2));
+        assert!(!was_out_of_sight(Some(false), Some(2)));
+        assert!(!was_out_of_sight(None, Some(2)));
+        // A window list a busy app left unanswered is not an empty one.
+        assert!(!was_out_of_sight(Some(false), None));
+    }
+
+    #[test]
+    fn an_unanswered_read_is_repeated_until_it_is_answered() {
+        let reads = Cell::new(0);
+        let read = || {
+            reads.set(reads.get() + 1);
+            if reads.get() < 3 {
+                Err(Unanswered)
+            } else {
+                Ok(2)
+            }
+        };
+        assert_eq!(
+            answered(read, Duration::from_secs(60), Duration::ZERO),
+            Some(2)
+        );
+        assert_eq!(reads.get(), 3);
+        // Never answered: read once, then given up at the deadline.
+        let reads = Cell::new(0);
+        let never = || {
+            reads.set(reads.get() + 1);
+            Err::<(), _>(Unanswered)
+        };
+        assert_eq!(answered(never, Duration::ZERO, Duration::ZERO), None);
+        assert_eq!(reads.get(), 1);
     }
 
     #[test]
