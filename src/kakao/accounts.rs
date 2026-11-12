@@ -50,6 +50,20 @@ pub fn account_data_dir(base: &Path, user_id: i64) -> PathBuf {
     }
 }
 
+/// The data dir of an account katok has already read, found without deriving any key.
+///
+/// `--account <user-id>` only has to pick a data dir, and the dir an id maps to is pinned to
+/// that id by the auth cache the first verified read wrote there. Listing every account to
+/// find it costs two 100k-round PBKDF2 derivations and a SQLCipher open per account and
+/// database, seconds on every `send`, so a pinned dir is taken as it is. Anything that reads
+/// KakaoTalk's database from it still verifies the key when it opens the database.
+/// `None` for an id no dir is pinned to yet.
+pub fn pinned_account_data_dir(base: &Path, user_id: i64) -> Option<PathBuf> {
+    let dir = account_data_dir(base, user_id);
+    matches!(read_katok_cache(&katok_cache_path(&dir)), Some((pinned, _)) if pinned == user_id)
+        .then_some(dir)
+}
+
 /// User ids remembered by katok under `base`: the pinned one and every per-account dir.
 fn cached_user_ids(base: &Path) -> Vec<i64> {
     let mut ids = Vec::new();
@@ -238,6 +252,30 @@ mod tests {
             account_data_dir(base, 2002),
             base.join("accounts").join("2002")
         );
+    }
+
+    #[test]
+    fn only_a_dir_pinned_to_the_id_is_taken_without_verification() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let base = dir.path();
+        // Nothing read yet: there is no pinned dir to trust, so the caller must verify.
+        assert_eq!(pinned_account_data_dir(base, 1001), None);
+
+        pin(base, 1001);
+        assert_eq!(
+            pinned_account_data_dir(base, 1001),
+            Some(base.to_path_buf())
+        );
+        // Another id maps to its own dir, which nothing has pinned yet.
+        assert_eq!(pinned_account_data_dir(base, 2002), None);
+
+        let other = base.join("accounts").join("2002");
+        pin(&other, 2002);
+        assert_eq!(pinned_account_data_dir(base, 2002), Some(other.clone()));
+
+        // A dir pinned to a different id is never taken for this one.
+        pin(&other, 3003);
+        assert_eq!(pinned_account_data_dir(base, 2002), None);
     }
 
     #[test]

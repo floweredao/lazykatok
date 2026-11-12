@@ -14,6 +14,13 @@
   share an archive.
 - `watch --select` on the macOS source asks which account to use when more
   than one opens and none was given.
+- `send --account <user-id>` no longer derives every account's key on each
+  run. `send` reads only katok's own archive, so an account katok has already
+  read is taken from the data dir pinned to it, which took a send from several
+  seconds of key derivation to none. It no longer confirms that the account's
+  database is still on this Mac; commands that read KakaoTalk's database, an
+  id read for the first time, and `--account latest` still list and verify
+  the accounts.
 
 ### Reply TUI
 
