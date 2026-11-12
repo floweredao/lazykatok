@@ -1889,34 +1889,40 @@ fn run_send(
     if background_only {
         let body = body_owned.expect("text body prepared for background-only send");
         let ctx = ax_send::SendContext::background_only(policy);
-        ax_send::send_to_open_window(&target_owned, &body, false, &ctx)?;
+        let delivery = ax_send::send_to_open_window(&target_owned, &body, false, &ctx)?;
         return print_payload(
             json,
-            &serde_json::json!({ "sent": true, "room": room_display }),
+            &serde_json::json!({
+                "sent": true,
+                "room": room_display,
+                "confirmed": delivery.as_str()
+            }),
         );
     }
 
     let outcome = lazykatok::kakao::send_curtain::run_with_curtain(curtain_title, move |curtain| {
         let ctx = ax_send::SendContext::with_curtain(policy, curtain);
         if dry_run || ensure_open {
-            return ax_send::resolve_room_window(&target_owned, allow_open, &ctx);
+            return ax_send::resolve_room_window(&target_owned, allow_open, &ctx).map(|()| None);
         }
         if let Some(path) = &image_owned {
-            return ax_send::send_image_to_open_window(&target_owned, path, allow_open, &ctx);
+            return ax_send::send_image_to_open_window(&target_owned, path, allow_open, &ctx)
+                .map(|()| None);
         }
         let body = body_owned.expect("text body prepared before the curtain");
         if draft {
-            return ax_send::draft_to_open_window(&target_owned, &body, allow_open, &ctx);
+            return ax_send::draft_to_open_window(&target_owned, &body, allow_open, &ctx)
+                .map(|()| None);
         }
-        ax_send::send_to_open_window(&target_owned, &body, allow_open, &ctx)
+        ax_send::send_to_open_window(&target_owned, &body, allow_open, &ctx).map(Some)
     });
 
-    match outcome {
+    let delivery = match outcome {
         Ok(result) => result?,
         // The worker panicked. Input and focus were already handed back by the
         // curtain's own scope guards, so report rather than resume it.
         Err(_) => anyhow::bail!("the send thread panicked; nothing was confirmed sent"),
-    }
+    };
 
     if ensure_open {
         return print_payload(
@@ -1949,7 +1955,8 @@ fn run_send(
             "sent": !draft,
             "drafted": draft,
             "room": room_display,
-            "chars": chars
+            "chars": chars,
+            "confirmed": delivery.map(ax_send::Delivery::as_str)
         }),
     )
 }

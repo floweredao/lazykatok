@@ -147,6 +147,7 @@ katok send --chat <chat-id> --image /tmp/katok-send.png \
 | Image send needs the screen | Image paste uses the system paste menu path; `--take-focus-now` if nobody is at the keyboard. Text send can stay background. |
 | KakaoTalk not running | `pgrep -x KakaoTalk` — start the app first; send drives the live UI. |
 | Want human review before send | `--draft` leaves text in the compose box; person presses Enter. |
+| "did not appear among the room's latest messages" | KakaoTalk took the text but it was not seen in the room. Do not resend: check the room (`katok transcript`) and report. |
 | Send should not bring KakaoTalk forward | Keep the room open with `katok send --chat <chat-id> --ensure-open --json` (sends nothing; returns `opened: false` at once when it already is). A send into an open room stays in the background. |
 
 ## Technical Boundary
