@@ -36,6 +36,17 @@
   message saying it may still have been delivered, so it is checked rather
   than resent. Where the transcript cannot be read at all, the emptied box
   still counts, reported as `confirmed: "compose_drained"`.
+- A busy KakaoTalk no longer makes a delivered text look unconfirmed, or an
+  open room look closed. An Accessibility read that KakaoTalk leaves
+  unanswered (it is busy, or still starting) used to read as an empty list:
+  the new message seemed missing from the room, so the send failed with
+  "did not appear among the room's latest messages", and the room's window
+  seemed closed, so the next send tried to reopen KakaoTalk and failed with
+  "KakaoTalk has no open window". Such reads are now waited out for up to
+  10 s, and a transcript still unanswered when the check ends falls back to
+  `confirmed: "compose_drained"`. A KakaoTalk that answers nothing for 10 s
+  is reported as not responding, with nothing sent. The transcript check also
+  waits up to 10 s for the message instead of 3 s.
 - A step that has to bring KakaoTalk forward (opening a room, pasting an image
   or a draft, the visible Enter fallback) now hides KakaoTalk again afterwards
   when it was hidden or had no window before. It used to stay on screen behind
