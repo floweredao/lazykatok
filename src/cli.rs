@@ -235,7 +235,11 @@ pub(crate) enum Commands {
         #[arg(long, conflicts_with = "room")]
         chat: Option<String>,
         /// Message body. Reads stdin when omitted.
-        #[arg(long)]
+        ///
+        /// May start with "-" (`--text "-5 min"`). A body that is nothing but a long flag, such
+        /// as `--json`, is refused: that is a forgotten value swallowing the next flag, and it
+        /// would otherwise be sent. Pipe such a body on stdin to send it literally.
+        #[arg(long, allow_hyphen_values = true, value_parser = parse_message_text)]
         text: Option<String>,
         /// Send an image file instead of text. Mutually exclusive with --text.
         #[arg(long, conflicts_with = "text")]
@@ -462,9 +466,62 @@ pub(crate) enum PermissionsCommand {
     },
 }
 
+/// `--text` value parser: anything, except a lone long-flag token.
+///
+/// `--text` accepts leading hyphens so a message like "-5 min" needs no `--text=` spelling,
+/// which also lets `--text --json` take `--json` as the body when the value was forgotten.
+/// No real message is a bare `--word`, so that shape is refused instead of sent.
+#[cfg(all(target_os = "macos", feature = "private-send"))]
+fn parse_message_text(value: &str) -> Result<String, String> {
+    let flag_shaped = value.strip_prefix("--").is_some_and(|rest| {
+        rest.starts_with(|c: char| c.is_ascii_lowercase())
+            && rest.chars().all(|c| c.is_ascii_lowercase() || c == '-')
+    });
+    if flag_shaped {
+        return Err(format!(
+            "'{value}' looks like a flag, not a message; was the --text value left out? \
+             To send it literally, pipe it on stdin"
+        ));
+    }
+    Ok(value.to_string())
+}
+
 #[cfg(all(test, target_os = "macos", feature = "private-send"))]
 mod tests {
     use super::*;
+
+    fn send_text(args: &[&str]) -> Result<Option<String>, clap::Error> {
+        let mut argv = vec!["lazykatok", "send", "--chat", "1"];
+        argv.extend(args);
+        Cli::try_parse_from(argv).map(|cli| match cli.command {
+            Commands::Send { text, .. } => text,
+            _ => unreachable!("send parses to Commands::Send"),
+        })
+    }
+
+    #[test]
+    fn a_message_may_start_with_a_hyphen() {
+        for body in ["-5 min", "- item", "-", "--", "-> next", "--- break ---"] {
+            assert_eq!(
+                send_text(&["--text", body]).expect(body).as_deref(),
+                Some(body)
+            );
+        }
+        assert_eq!(
+            send_text(&["--text=-5 min"]).unwrap().as_deref(),
+            Some("-5 min")
+        );
+    }
+
+    #[test]
+    fn a_forgotten_text_value_does_not_swallow_the_next_flag() {
+        for flag in ["--json", "--accept-use-policy", "--dry-run"] {
+            assert!(
+                send_text(&["--text", flag]).is_err(),
+                "{flag} must not become the message"
+            );
+        }
+    }
 
     #[test]
     fn send_listing_modes_parse_without_target() {
