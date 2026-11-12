@@ -148,6 +148,7 @@ katok send --chat <chat-id> --image /tmp/katok-send.png \
 | KakaoTalk not running | `pgrep -x KakaoTalk` — start the app first; send drives the live UI. |
 | Want human review before send | `--draft` leaves text in the compose box; person presses Enter. |
 | "did not appear among the room's latest messages" | KakaoTalk took the text but it was not seen in the room. Do not resend: check the room (`katok transcript`) and report. |
+| "did not answer Accessibility requests" | KakaoTalk was busy or still starting for 10 s, so the send could not tell which rooms are open. Nothing was sent: retry once, and report if it repeats. |
 | Send should not bring KakaoTalk forward | Keep the room open with `katok send --chat <chat-id> --ensure-open --json` (sends nothing; returns `opened: false` at once when it already is). A send into an open room stays in the background. |
 
 ## Technical Boundary
