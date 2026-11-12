@@ -47,6 +47,12 @@
   `confirmed: "compose_drained"`. A KakaoTalk that answers nothing for 10 s
   is reported as not responding, with nothing sent. The transcript check also
   waits up to 10 s for the message instead of 3 s.
+- A delivered text no longer fails with "did not appear among the room's
+  latest messages" because of the empty row KakaoTalk keeps at the bottom of
+  a room's transcript. New messages are inserted above that row, and the
+  check took it as the room's newest message, so it found it still at the end
+  after the send and saw nothing new. The check now starts from the newest
+  row that shows anything.
 - A step that has to bring KakaoTalk forward (opening a room, pasting an image
   or a draft, the visible Enter fallback) now hides KakaoTalk again afterwards
   when it was hidden or had no window before. It used to stay on screen behind

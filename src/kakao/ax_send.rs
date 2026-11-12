@@ -1653,10 +1653,34 @@ fn transcript_rows(window: AXUIElementRef) -> Option<Vec<AxRef>> {
 
 fn transcript_mark(window: AXUIElementRef) -> Option<TranscriptMark> {
     let rows = transcript_rows(window)?;
+    let (count, last) = mark_of(&rows, |row| row_values(row.as_raw()), CONFIRM_SCAN_ROWS);
     Some(TranscriptMark {
-        rows: rows.len(),
-        last: rows.into_iter().last(),
+        rows: count,
+        last: last.map(|row| AxRef::retained(row.as_raw())),
     })
+}
+
+/// Where the transcript ends, for [`rows_since`]: the newest of the last `scan` rows that holds
+/// a value, and the number of rows up to and including it.
+///
+/// KakaoTalk ends a room's transcript with an empty spacer row and inserts new messages above
+/// it, so the spacer stays the last row. Marked by the spacer, a send finds it again at the end
+/// and sees nothing new; counted with the spacer, the rows past the old count are the spacer
+/// alone. When no scanned row holds a value, or one goes unread before one that does, the whole
+/// count decides.
+fn mark_of<T>(
+    rows: &[T],
+    values: impl Fn(&T) -> Result<Vec<String>, Unanswered>,
+    scan: usize,
+) -> (usize, Option<&T>) {
+    for (i, row) in rows.iter().enumerate().rev().take(scan) {
+        match values(row) {
+            Ok(values) if !values.is_empty() => return (i + 1, Some(row)),
+            Ok(_) => {}
+            Err(Unanswered) => break,
+        }
+    }
+    (rows.len(), None)
 }
 
 /// Whether a row added since `mark` shows `text`. `None` when the transcript cannot be read.
@@ -3151,7 +3175,7 @@ mod room_matching_tests {
 #[cfg(test)]
 mod delivery_tests {
     use super::{
-        confirm_delivery, confirm_until, rows_since, shows_among, shows_message, Delivery,
+        confirm_delivery, confirm_until, mark_of, rows_since, shows_among, shows_message, Delivery,
         SendError, Unanswered,
     };
     use std::cell::Cell;
@@ -3191,6 +3215,54 @@ mod delivery_tests {
         // The count stayed at three because the oldest row was dropped as ours arrived.
         let rows = [(2, "b"), (3, "c"), (4, "synthetic hello")];
         assert_eq!(new_texts(3, Some(3), &rows), ["synthetic hello"]);
+    }
+
+    /// What a row shows, as the AX reads would report it: a spacer row holds no value.
+    fn row_text(row: &Row) -> Result<Vec<String>, Unanswered> {
+        Ok([row.1]
+            .into_iter()
+            .filter(|t| !t.is_empty())
+            .map(String::from)
+            .collect())
+    }
+
+    #[test]
+    fn a_message_inserted_above_the_trailing_spacer_is_new() {
+        // The transcript ends with an empty spacer row, and a new message lands above it.
+        let before = [(1, "older"), (2, "their reply"), (9, "")];
+        let (count, last) = mark_of(&before, row_text, 8);
+        assert_eq!((count, last), (2, Some(&(2, "their reply"))));
+        let after = [
+            (1, "older"),
+            (2, "their reply"),
+            (3, "synthetic hello"),
+            (9, ""),
+        ];
+        let new = rows_since(count, last, &after, |a, b| a.0 == b.0, 8);
+        assert!(new.iter().any(|row| row.1 == "synthetic hello"));
+        // Every row redrawn as a new element: the count past the old newest message decides.
+        let redrawn = [
+            (11, "older"),
+            (12, "their reply"),
+            (13, "synthetic hello"),
+            (19, ""),
+        ];
+        let new = rows_since(count, last, &redrawn, |a, b| a.0 == b.0, 8);
+        assert!(new.iter().any(|row| row.1 == "synthetic hello"));
+    }
+
+    #[test]
+    fn an_unread_row_leaves_the_mark_to_the_whole_count() {
+        let rows = [(1, "older"), (9, "")];
+        let unread = |row: &Row| {
+            if row.0 == 9 {
+                Err(Unanswered)
+            } else {
+                row_text(row)
+            }
+        };
+        assert_eq!(mark_of(&rows, unread, 8), (2, None));
+        assert_eq!(mark_of(&[(9, "")], row_text, 8), (1, None));
     }
 
     #[test]
