@@ -408,6 +408,70 @@ pub fn image_ext(body: &[u8]) -> &'static str {
     }
 }
 
+/// Length of the header KakaoTalk scrambles in an animated emoticon body.
+const EMOTICON_SCRAMBLED_LEN: usize = 128;
+
+/// Undo the header scrambling on an animated emoticon.
+///
+/// The catalog serves an animated emoticon as WebP whose first 128 bytes are
+/// XORed with a fixed keystream, so it sniffs as nothing. A body that already
+/// sniffs as an image (a static emoticon) is returned untouched, and so is one
+/// that still sniffs as nothing after unscrambling.
+fn unscramble_emoticon(body: Vec<u8>) -> Vec<u8> {
+    if image_ext(&body) != ".bin" {
+        return body;
+    }
+    let mut plain = body.clone();
+    for (byte, key) in plain.iter_mut().zip(emoticon_keystream()) {
+        *byte ^= key;
+    }
+    if image_ext(&plain) == ".bin" {
+        body
+    } else {
+        plain
+    }
+}
+
+/// The emoticon keystream: three LFSRs seeded from a fixed key, as in the
+/// MIT-licensed descrambler at github.com/blluv/KakaoTalkEmoticonDownloader.
+fn emoticon_keystream() -> [u8; EMOTICON_SCRAMBLED_LEN] {
+    let key = b"a271730728cbe141e47fd9d677e9006d";
+    let mut seq: [u32; 3] = [0x1200_0032, 0x2527_ac91, 0x888c_1214];
+    for i in 0..4 {
+        seq[0] = (seq[0] << 8) | u32::from(key[i]);
+        seq[1] = (seq[1] << 8) | u32::from(key[4 + i]);
+        seq[2] = (seq[2] << 8) | u32::from(key[8 + i]);
+    }
+    let mut stream = [0u8; EMOTICON_SCRAMBLED_LEN];
+    for out in &mut stream {
+        let (mut flag1, mut flag2, mut value) = (1u8, 0u8, 0u8);
+        for _ in 0..8 {
+            if seq[0] & 1 != 0 {
+                seq[0] = (seq[0] >> 1) ^ 0xC000_0031;
+                if seq[1] & 1 != 0 {
+                    seq[1] = ((seq[1] >> 1) | 0xC000_0000) ^ 0x2000_0010;
+                    flag1 = 1;
+                } else {
+                    seq[1] = (seq[1] >> 1) & 0x3FFF_FFFF;
+                    flag1 = 0;
+                }
+            } else {
+                seq[0] >>= 1;
+                if seq[2] & 1 != 0 {
+                    seq[2] = ((seq[2] >> 1) | 0xF000_0000) ^ 0x0800_0001;
+                    flag2 = 1;
+                } else {
+                    seq[2] = (seq[2] >> 1) & 0x0FFF_FFFF;
+                    flag2 = 0;
+                }
+            }
+            value = (value << 1) | (flag1 ^ flag2);
+        }
+        *out = value;
+    }
+    stream
+}
+
 fn resolve_one<F>(
     chat_id: i64,
     frame: &MediaFrameInput,
@@ -545,6 +609,7 @@ where
                 ));
             }
             match fetcher(url, options.cdn_timeout, options.max_fetch_bytes).and_then(|body| {
+                let body = unscramble_emoticon(body);
                 if image_ext(&body) == ".bin" {
                     return Err(Error::Kakao(
                         "emoticon body is not a recognised image".to_string(),
@@ -1500,5 +1565,78 @@ mod tests {
         assert_eq!(image_ext(&[0x1a, 0x45, 0xdf, 0xa3, 0, 0, 0, 0]), ".webm");
         assert_eq!(image_ext(b"\xff\xd8\xffrest"), ".jpg");
         assert_eq!(image_ext(b"nonsense-body"), ".bin");
+    }
+
+    /// The 128-byte keystream an animated emoticon's header is XORed with, from
+    /// an independent port of the reference descrambler. Used to build
+    /// synthetic scrambled bodies, not to check the production LFSR against itself.
+    const EMOTICON_KEYSTREAM_HEX: &str = concat!(
+        "e7ad425b16f1811966423c44678d44b84e581ce9c3da1c50474cef504a8bc0cb",
+        "3f11b3e43470a07aa3ae2c5b4b11c301237e82594c1dc3cd01d21c236be39fb6",
+        "b22e60d7a7a9fe9e3fba585d64f1a082146c57b2fd9a12494d385fd2906ffc9b",
+        "8dcbc57eb70c01577d234e4fbd48840394516829f8cf4b4b3a431856083de28c",
+    );
+
+    fn emoticon_frame() -> MediaFrameInput {
+        MediaFrameInput {
+            kind: MediaKind::Emoticon,
+            checksum_sha1: None,
+            full_stem: String::new(),
+            full_ext: "",
+            thumb_stem: String::new(),
+            cdn_url: Some("https://item.kakaocdn.net/dw/1000001.emot_001.webp".to_string()),
+            ..frame()
+        }
+    }
+
+    #[test]
+    fn scrambled_animated_emoticon_is_stored_as_its_webp() {
+        let (_, dirs, options) = fixture();
+        // Synthetic animated WebP longer than the scrambled 128-byte header, so
+        // the untouched tail is checked too.
+        let mut plain = b"RIFF\0\0\0\0WEBPVP8X".to_vec();
+        plain.resize(200, 0x5a);
+        let riff_len = (plain.len() as u32 - 8).to_le_bytes();
+        plain[4..8].copy_from_slice(&riff_len);
+        let mut scrambled = plain.clone();
+        for (byte, key) in scrambled
+            .iter_mut()
+            .zip(bytes_from_hex(EMOTICON_KEYSTREAM_HEX))
+        {
+            *byte ^= key;
+        }
+        assert_eq!(image_ext(&scrambled), ".bin");
+
+        let report = resolve_media_frames_with_fetcher(
+            CHAT_ID,
+            &[emoticon_frame()],
+            &dirs,
+            &options,
+            |_, _, _| Ok(scrambled.clone()),
+        )
+        .expect("resolve");
+
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!(report.records[0].tier, MediaTier::Cdn);
+        let path = report.records[0].path.clone().expect("output path");
+        assert_eq!(path.extension().and_then(|ext| ext.to_str()), Some("webp"));
+        assert_eq!(std::fs::read(path).expect("written"), plain);
+    }
+
+    #[test]
+    fn emoticon_body_that_is_no_image_even_unscrambled_is_refused() {
+        let (_, dirs, options) = fixture();
+
+        let report = resolve_media_frames_with_fetcher(
+            CHAT_ID,
+            &[emoticon_frame()],
+            &dirs,
+            &options,
+            |_, _, _| Ok(vec![0x42; 200]),
+        )
+        .expect("resolve");
+
+        assert_eq!(report.records[0].tier, MediaTier::Stub);
+        assert_eq!(report.errors.len(), 1);
     }
 }
